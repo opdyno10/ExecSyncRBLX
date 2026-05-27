@@ -24,17 +24,50 @@ local Library = loadstring(game:HttpGet(
 ))()
 
 -- ─────────────────────────────────────────────
+--  REMOTE LOGGER
+--  Sends all logs to Firestore > debugLogs so
+--  you can read errors from the Firebase console
+-- ─────────────────────────────────────────────
+local function remoteLog(level, message)
+    -- Always print locally too
+    print("[ExecSync][" .. level .. "] " .. tostring(message))
+
+    -- Fire-and-forget to Firestore (non-blocking)
+    task.spawn(function()
+        pcall(function()
+            request({
+                Url     = FIRESTORE_BASE .. "/debugLogs",
+                Method  = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body    = HttpService:JSONEncode({
+                    fields = {
+                        username  = { stringValue  = Players.LocalPlayer.Name },
+                        level     = { stringValue  = level },
+                        message   = { stringValue  = tostring(message) },
+                        timestamp = { integerValue = tostring(os.time()) },
+                        placeId   = { stringValue  = tostring(game.PlaceId) },
+                        jobId     = { stringValue  = tostring(game.JobId) },
+                    }
+                }),
+            })
+        end)
+    end)
+end
+
+local function logInfo(msg)  remoteLog("INFO",  msg) end
+local function logWarn(msg)  remoteLog("WARN",  msg) end
+local function logError(msg) remoteLog("ERROR", msg) end
+
+-- ─────────────────────────────────────────────
 --  TOKEN GENERATOR
---  Produces a random 32-character alphanumeric
---  string that gets stored in Firestore and
---  saved locally — username never touches disk
 -- ─────────────────────────────────────────────
 local function generateToken()
     local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     local token  = ""
     math.randomseed(os.time() * math.random(1000, 9999))
     for _ = 1, 32 do
-        token = token .. chars:sub(math.random(1, #chars), math.random(1, #chars))
+        local i = math.random(1, #chars)
+        token = token .. chars:sub(i, i)
     end
     return token
 end
@@ -43,8 +76,9 @@ end
 --  FIRESTORE HELPERS
 -- ─────────────────────────────────────────────
 
--- Step 1: find the document matching username + code
+-- Find document matching username + code
 local function queryByCode(username, code)
+    logInfo("queryByCode → username=" .. username .. " code=" .. code)
     local body = HttpService:JSONEncode({
         structuredQuery = {
             from  = {{ collectionId = "verificationCodes" }},
@@ -82,20 +116,28 @@ local function queryByCode(username, code)
         })
     end)
 
-    if not ok or response.StatusCode ~= 200 then
-        return nil, "Network error (" .. tostring(response and response.StatusCode) .. ")"
+    if not ok then
+        logError("queryByCode pcall failed: " .. tostring(response))
+        return nil, "Network error."
+    end
+    if response.StatusCode ~= 200 then
+        logError("queryByCode HTTP " .. response.StatusCode .. ": " .. tostring(response.Body))
+        return nil, "Server error (" .. response.StatusCode .. ")."
     end
 
     local parsed = HttpService:JSONDecode(response.Body)
     if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
+        logWarn("queryByCode: no matching document")
         return nil, "Invalid code."
     end
 
+    logInfo("queryByCode: found " .. parsed[1].document.name)
     return parsed[1].document.name, nil
 end
 
--- Step 2: write sessionToken (+ mark used) into the document
+-- Write sessionToken + used=true onto a document
 local function writeTokenToDoc(docName, token)
+    logInfo("writeTokenToDoc → " .. docName)
     local patchUrl = "https://firestore.googleapis.com/v1/" .. docName
         .. "?updateMask.fieldPaths=used&updateMask.fieldPaths=sessionToken"
 
@@ -113,15 +155,22 @@ local function writeTokenToDoc(docName, token)
         })
     end)
 
-    if not ok or response.StatusCode ~= 200 then
-        warn("[ExecSync] Could not write token to Firestore:", response and response.StatusCode)
+    if not ok then
+        logError("writeTokenToDoc pcall failed: " .. tostring(response))
         return false
     end
+    if response.StatusCode ~= 200 then
+        logError("writeTokenToDoc HTTP " .. response.StatusCode .. ": " .. tostring(response.Body))
+        return false
+    end
+
+    logInfo("writeTokenToDoc: success")
     return true
 end
 
--- Step 3 (session restore): find document by sessionToken, return username
+-- Find document by sessionToken, return username
 local function queryByToken(token)
+    logInfo("queryByToken → token=" .. token:sub(1, 8) .. "…")
     local body = HttpService:JSONEncode({
         structuredQuery = {
             from  = {{ collectionId = "verificationCodes" }},
@@ -145,26 +194,59 @@ local function queryByToken(token)
         })
     end)
 
-    if not ok or response.StatusCode ~= 200 then return nil end
+    if not ok then
+        logError("queryByToken pcall failed: " .. tostring(response))
+        return nil
+    end
+    if response.StatusCode ~= 200 then
+        logError("queryByToken HTTP " .. response.StatusCode)
+        return nil
+    end
 
     local parsed = HttpService:JSONDecode(response.Body)
     if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
+        logWarn("queryByToken: token not found in Firestore")
         return nil
     end
 
     local fields = parsed[1].document.fields
     if fields and fields.username and fields.username.stringValue then
+        logInfo("queryByToken: resolved to " .. fields.username.stringValue)
         return fields.username.stringValue
     end
+
+    logWarn("queryByToken: document found but no username field")
     return nil
 end
 
+-- Fetch global settings document from Firestore
+local function fetchRemoteSettings()
+    logInfo("fetchRemoteSettings: fetching…")
+    local ok, response = pcall(function()
+        return request({
+            Url     = FIRESTORE_BASE .. "/settings/global",
+            Method  = "GET",
+            Headers = { ["Content-Type"] = "application/json" },
+        })
+    end)
+
+    if not ok or response.StatusCode ~= 200 then
+        logWarn("fetchRemoteSettings: failed (" .. tostring(response and response.StatusCode) .. ")")
+        return nil
+    end
+
+    local parsed = HttpService:JSONDecode(response.Body)
+    logInfo("fetchRemoteSettings: OK")
+    return parsed and parsed.fields or nil
+end
+
 -- ─────────────────────────────────────────────
---  SESSION HELPERS  (token stored on disk)
+--  SESSION HELPERS
 -- ─────────────────────────────────────────────
 
 local function saveToken(token)
     pcall(function() writefile(SESSION_FILE, token) end)
+    logInfo("Session token saved to disk")
 end
 
 local function readToken()
@@ -175,14 +257,63 @@ local function readToken()
     return nil
 end
 
-local function clearSession()
-    pcall(function() writefile(SESSION_FILE, "") end)
+local function deleteSessionFile()
+    -- Try delfile first (most executors support it), fall back to emptying
+    local deleted = pcall(function() delfile(SESSION_FILE) end)
+    if not deleted then
+        pcall(function() writefile(SESSION_FILE, "") end)
+    end
+    logInfo("Session file deleted/cleared")
+end
+
+-- ─────────────────────────────────────────────
+--  SETTINGS POLL LOOP
+--  Runs every 5 minutes after main GUI loads.
+--  Reads settings/global from Firestore and
+--  applies them — including a kill switch.
+-- ─────────────────────────────────────────────
+local function startSettingsPoll(mainLibrary)
+    task.spawn(function()
+        while true do
+            task.wait(300) -- 5 minutes
+
+            local settings = fetchRemoteSettings()
+            if settings then
+
+                -- Kill switch: if killSwitch = true, force unload
+                if settings.killSwitch and settings.killSwitch.booleanValue == true then
+                    logWarn("Kill switch activated by remote settings — unloading")
+                    mainLibrary:Notification({
+                        Name        = "ExecSync",
+                        Description = "Script has been disabled remotely.",
+                        Duration    = 6,
+                    })
+                    task.wait(3)
+                    mainLibrary:Unload()
+                    return
+                end
+
+                -- Maintenance message: show a notification if set
+                if settings.maintenanceMessage and settings.maintenanceMessage.stringValue ~= "" then
+                    mainLibrary:Notification({
+                        Name        = "ExecSync – Notice",
+                        Description = settings.maintenanceMessage.stringValue,
+                        Duration    = 8,
+                        Icon        = "116339777575852",
+                    })
+                end
+
+                logInfo("Settings refreshed from Firestore")
+            end
+        end
+    end)
 end
 
 -- ─────────────────────────────────────────────
 --  MAIN EXECSYNC GUI
 -- ─────────────────────────────────────────────
 local function LoadMainScript(username)
+    logInfo("LoadMainScript → " .. tostring(username))
     Library:Unload()
     task.wait(0.3)
 
@@ -286,13 +417,13 @@ local function LoadMainScript(username)
             Callback = function(v) end })
         DealerSection:Button({ Name = "Open Dealership", Callback = function() end })
 
-        OptimSection:Toggle({ Name = "Disable Rendering",        Flag = "DisableRendering",  Default = false, Callback = function(v) end })
-        MiscSection:Toggle({ Name = "No Telemetry",               Flag = "NoTelemetry",       Default = false, Callback = function(v) end })
-        MiscSection:Toggle({ Name = "Always See Bounties [$$$]",  Flag = "AlwaysSeeBounties", Default = false, Callback = function(v) end })
+        OptimSection:Toggle({ Name = "Disable Rendering",       Flag = "DisableRendering",  Default = false, Callback = function(v) end })
+        MiscSection:Toggle({ Name = "No Telemetry",              Flag = "NoTelemetry",       Default = false, Callback = function(v) end })
+        MiscSection:Toggle({ Name = "Always See Bounties [$$$]", Flag = "AlwaysSeeBounties", Default = false, Callback = function(v) end })
 
-        WebhookSection:Toggle({ Name = "Webhook Alerts",         Flag = "WebhookAlerts", Default = false, Callback = function(v) end })
-        WebhookSection:Textbox({ Name = "Webhook URL",           Flag = "WebhookURL",    Default = "", Placeholder = "...", Callback = function(v) end })
-        WebhookSection:Toggle({ Name = "Ping on alert (@here)",  Flag = "WebhookPing",   Default = false, Callback = function(v) end })
+        WebhookSection:Toggle({ Name = "Webhook Alerts",        Flag = "WebhookAlerts", Default = false, Callback = function(v) end })
+        WebhookSection:Textbox({ Name = "Webhook URL",          Flag = "WebhookURL",    Default = "", Placeholder = "...", Callback = function(v) end })
+        WebhookSection:Toggle({ Name = "Ping on alert (@here)", Flag = "WebhookPing",   Default = false, Callback = function(v) end })
     end
 
     do
@@ -332,11 +463,13 @@ local function LoadMainScript(username)
         end })
 
         SessionSection:Button({ Name = "Eject", Callback = function()
+            logInfo("Eject pressed")
             MainLibrary:Unload()
         end })
 
         SessionSection:Button({ Name = "Log Out", Callback = function()
-            clearSession()
+            logInfo("Log Out pressed — clearing session")
+            deleteSessionFile()
             MainLibrary:Notification({
                 Name        = "ExecSync",
                 Description = "Logged out. Re-run the script to sign in again.",
@@ -493,12 +626,18 @@ local function LoadMainScript(username)
     })
 
     MainLibrary:Init()
+
+    -- Start the 5-minute settings poll after GUI is live
+    startSettingsPoll(MainLibrary)
+    logInfo("Main GUI loaded for " .. (username or "unknown"))
 end
 
 -- ─────────────────────────────────────────────
 --  AUTH UI
 -- ─────────────────────────────────────────────
 local function initUI()
+    logInfo("initUI: starting")
+
     local AuthWindow = Library:Window({
         Name      = "System Bridge",
         Version   = "1.0.0",
@@ -511,9 +650,10 @@ local function initUI()
 
     task.spawn(function()
 
-        -- ── Restore session by token ──────────────
+        -- ── Try restoring session from saved token ────
         local savedToken = readToken()
         if savedToken then
+            logInfo("Found saved token — validating with Firestore")
             Library:Notification({
                 Name        = "ExecSync – Checking Session",
                 Description = "Validating your session token…",
@@ -532,26 +672,32 @@ local function initUI()
                 LoadMainScript(resolvedUser)
                 return
             else
-                -- Token invalid or revoked — clear it and show auth
-                clearSession()
+                -- Token invalid or revoked — delete file and show auth
+                logWarn("Saved token invalid — deleting session file")
+                deleteSessionFile()
+                Library:Notification({
+                    Name        = "ExecSync – Session Expired",
+                    Description = "Your session has expired. Please verify again.",
+                    Duration    = 5,
+                })
+                task.wait(2)
             end
         end
 
-        -- ── Build verification page ───────────────
-        local AuthPage    = AuthWindow:Page({ Name = "Verification", Icon = "111178525804834" })
-        local AuthSection = AuthPage:Section({ Name = "Identity Verification", Side = 1 })
+        -- ── Build verification page ───────────────────
+        local AuthPage = AuthWindow:Page({ Name = "Verification", Icon = "111178525804834" })
 
-        AuthSection:Label("Enter the 5-digit code from your dashboard", "Center")
-
-        AuthSection:Textbox({
+        -- Left: verify by code
+        local CodeSection = AuthPage:Section({ Name = "Verify with Code", Side = 1 })
+        CodeSection:Label("Enter the 5-digit code from your dashboard", "Center")
+        CodeSection:Textbox({
             Name        = "Security Code",
             Placeholder = "e.g. 30946",
             Default     = "",
             Flag        = "SecurityCode",
             Callback    = function(_) end,
         })
-
-        AuthSection:Button({
+        CodeSection:Button({
             Name     = "Verify Identity",
             Callback = function()
                 local code = (Library.Flags.SecurityCode or ""):match("^%s*(.-)%s*$")
@@ -572,9 +718,9 @@ local function initUI()
                 })
 
                 task.spawn(function()
-                    -- 1. Find the document
                     local docName, err = queryByCode(Players.LocalPlayer.Name, code)
                     if not docName then
+                        logError("Verification failed: " .. tostring(err))
                         Library:Notification({
                             Name        = "ExecSync – Failed",
                             Description = err or "Invalid code. Check your dashboard.",
@@ -583,40 +729,96 @@ local function initUI()
                         return
                     end
 
-                    -- 2. Generate unique token and write it to Firestore
                     local token = generateToken()
                     local wrote = writeTokenToDoc(docName, token)
-
                     if not wrote then
+                        logError("Failed to write token to Firestore")
                         Library:Notification({
                             Name        = "ExecSync – Error",
-                            Description = "Could not save session. Try again.",
+                            Description = "Could not save session. Please try again.",
                             Duration    = 5,
                         })
                         return
                     end
 
-                    -- 3. Save token locally (NOT the username)
                     saveToken(token)
-
                     Library:Notification({
                         Name        = "ExecSync – Verified!",
                         Description = "Welcome, " .. Players.LocalPlayer.Name .. "! Loading ExecSync…",
                         Duration    = 5,
                         Icon        = "116339777575852",
                     })
-
                     task.wait(1.5)
                     LoadMainScript(Players.LocalPlayer.Name)
                 end)
             end,
         })
 
+        -- Right: restore by pasting a token directly
+        local TokenSection = AuthPage:Section({ Name = "Restore with Token", Side = 2 })
+        TokenSection:Label("Already have a token from your dashboard?", "Center")
+        TokenSection:Textbox({
+            Name        = "Session Token",
+            Placeholder = "Paste your token here",
+            Default     = "",
+            Flag        = "DirectToken",
+            Callback    = function(_) end,
+        })
+        TokenSection:Button({
+            Name     = "Restore Session",
+            Callback = function()
+                local token = (Library.Flags.DirectToken or ""):match("^%s*(.-)%s*$")
+
+                if token == "" then
+                    Library:Notification({
+                        Name        = "ExecSync – Input Error",
+                        Description = "Please paste your session token first.",
+                        Duration    = 4,
+                    })
+                    return
+                end
+
+                Library:Notification({
+                    Name        = "ExecSync – Checking Token",
+                    Description = "Validating token against database…",
+                    Duration    = 4,
+                })
+
+                task.spawn(function()
+                    logInfo("Direct token restore attempt")
+                    local resolvedUser = queryByToken(token)
+
+                    if not resolvedUser then
+                        logWarn("Direct token restore failed — token not found")
+                        Library:Notification({
+                            Name        = "ExecSync – Invalid Token",
+                            Description = "That token doesn't match any account. Check your dashboard.",
+                            Duration    = 6,
+                        })
+                        return
+                    end
+
+                    saveToken(token)
+                    logInfo("Direct token restore success → " .. resolvedUser)
+                    Library:Notification({
+                        Name        = "ExecSync – Restored!",
+                        Description = "Welcome back, " .. resolvedUser .. "! Loading ExecSync…",
+                        Duration    = 5,
+                        Icon        = "116339777575852",
+                    })
+                    task.wait(1.5)
+                    LoadMainScript(resolvedUser)
+                end)
+            end,
+        })
+
         Library:Init()
+        logInfo("Auth UI ready")
     end)
 end
 
 -- ─────────────────────────────────────────────
 --  ENTRY POINT
 -- ─────────────────────────────────────────────
+logInfo("ExecSync starting — place=" .. tostring(game.PlaceId) .. " user=" .. Players.LocalPlayer.Name)
 initUI()
