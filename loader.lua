@@ -265,14 +265,14 @@ local function LoadMainScript(username)
         local Perf  = MainSub["CarMods"]:Section({ Name = "Performance",    Side = 1 })
         local Extra = MainSub["CarMods"]:Section({ Name = "Extra Features", Side = 2 })
 
-        Perf:Toggle({ Name = "Top Speed",   Flag = "TopSpeedEnabled",     Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Speed",        Flag = "TopSpeed",            Min = 1,   Max = 600, Default = 300, Decimals = 1,   Callback = function() end })
-        Perf:Toggle({ Name = "Nitrous",      Flag = "NitrousEnabled",      Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",        Flag = "NitrousScale",        Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
-        Perf:Toggle({ Name = "Acceleration", Flag = "AccelerationEnabled", Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",        Flag = "AccelerationScale",   Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
-        Perf:Toggle({ Name = "Traction",     Flag = "TractionEnabled",     Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",        Flag = "TractionScale",       Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Top Speed",    Flag = "TopSpeedEnabled",     Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Speed",         Flag = "TopSpeed",            Min = 1,   Max = 600, Default = 300, Decimals = 1,   Callback = function() end })
+        Perf:Toggle({ Name = "Nitrous",       Flag = "NitrousEnabled",      Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",         Flag = "NitrousScale",        Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Acceleration",  Flag = "AccelerationEnabled", Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",         Flag = "AccelerationScale",   Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Traction",      Flag = "TractionEnabled",     Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",         Flag = "TractionScale",       Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
 
         Extra:Toggle({ Name = "Horn Boost",           Flag = "HornBoost",          Default = false, Callback = function() end })
         Extra:Slider({ Name = "Horn Boost Intensity",  Flag = "HornBoostIntensity", Min = 1, Max = 10, Default = 1, Decimals = 1, Callback = function() end })
@@ -312,14 +312,14 @@ local function LoadMainScript(username)
         })
         Dealer:Button({ Name = "Open Dealership", Callback = function() end })
 
-        Optim:Toggle({ Name = "Disable Rendering",       Flag = "DisableRendering",  Default = false, Callback = function() end })
+        Optim:Toggle({ Name = "Disable Rendering",        Flag = "DisableRendering",  Default = false, Callback = function() end })
 
-        Misc:Toggle({ Name = "No Telemetry",              Flag = "NoTelemetry",       Default = false, Callback = function() end })
-        Misc:Toggle({ Name = "Always See Bounties [$$$]", Flag = "AlwaysSeeBounties", Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "No Telemetry",               Flag = "NoTelemetry",       Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "Always See Bounties [$$$]",  Flag = "AlwaysSeeBounties", Default = false, Callback = function() end })
 
-        Webhook:Toggle({ Name = "Webhook Alerts",         Flag = "WebhookAlerts", Default = false, Callback = function() end })
-        Webhook:Textbox({ Name = "Webhook URL",           Flag = "WebhookURL",    Default = "", Placeholder = "...", Callback = function() end })
-        Webhook:Toggle({ Name = "Ping on alert (@here)",  Flag = "WebhookPing",   Default = false, Callback = function() end })
+        Webhook:Toggle({ Name = "Webhook Alerts",          Flag = "WebhookAlerts", Default = false, Callback = function() end })
+        Webhook:Textbox({ Name = "Webhook URL",            Flag = "WebhookURL",    Default = "", Placeholder = "...", Callback = function() end })
+        Webhook:Toggle({ Name = "Ping on alert (@here)",   Flag = "WebhookPing",   Default = false, Callback = function() end })
     end
 
     -- ────────────────────────────────────────────
@@ -534,31 +534,18 @@ end
 -- ─────────────────────────────────────────────
 --  KEY SYSTEM  (Kiwisense Window — two-column page)
 -- ─────────────────────────────────────────────
---[[
-    Strategy:
-    • Load Kiwisense as a lightweight instance named "IceWare"
-    • Create a single Window with one Page (no SubPages, 2 columns)
-    • Left column  → "Key Verification" section  (textbox + buttons + status label)
-    • Right column → "Information" section + "Discord" section
-    • On success: ML:Unload() → then call onSuccess(username)
-    • The window title bar already shows "iw  IceWare  |  Key System" via
-      the Name/Version fields available in Kiwisense.
-]]
 local function BuildKeySystem(onSuccess)
-    -- Load library
     local KW = loadstring(game:HttpGet(
         "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
     ))()
 
-    -- Window — we repurpose Version as the subtitle shown after the logo + name
     local Win = KW:Window({
         Name      = "IceWare",
-        Version   = "Key System",   -- renders as  "IceWare  Key System"  in the title bar
+        Version   = "Key System",
         Logo      = "135215559087473",
         FadeSpeed = 0.25,
     })
 
-    -- Single page, 2 columns, no nav icons visible (we hide nav via one page only)
     local KeyPage = Win:Page({
         Name    = "Key System",
         Icon    = "116339777575852",
@@ -568,12 +555,13 @@ local function BuildKeySystem(onSuccess)
     -- ── LEFT COLUMN — Key Verification ────────
     local VerifSection = KeyPage:Section({ Name = "Key Verification", Side = 1 })
 
-    -- Info label (mirrors the grey info-box text in screenshot)
     VerifSection:Label("Enter your 5-digit code to unlock access", "Center")
 
-    -- The actual key input textbox
-    local enteredCode = ""
-    local CodeInput = VerifSection:Textbox({
+    -- Track the entered code and whether a verification is in progress
+    local enteredCode   = ""
+    local isVerifying   = false
+
+    VerifSection:Textbox({
         Name        = "Key Input",
         Flag        = "KeyInput",
         Default     = "",
@@ -583,49 +571,60 @@ local function BuildKeySystem(onSuccess)
         end
     })
 
-    -- Status feedback label (starts empty, updated dynamically)
     local StatusLabel = VerifSection:Label("", "Center")
 
-    -- Helper to update the status label text
-    -- Kiwisense Label returns the label object; we call :Set(text) to update it
     local function SetStatus(msg)
         StatusLabel:Set(msg)
     end
 
-    -- Check Key button
+    -- ── Check Key — full auth flow from script 1 ──
     VerifSection:Button({
         Name = "Check Key",
         Callback = function()
+            -- Guard: prevent double-submission while a request is in flight
+            if isVerifying then return end
+
             local code = enteredCode:match("^%s*(.-)%s*$") or ""
 
+            -- Input validation (mirrors script 1 exactly)
             if code == "" then
                 SetStatus("Please enter your security code.")
                 return
             end
-
             if not code:match("^%d%d%d%d%d$") then
                 SetStatus("Code must be exactly 5 digits.")
                 return
             end
 
-            SetStatus("Verifying...")
+            -- Lock button while verifying
+            isVerifying = true
+            SetStatus("Verifying…")
 
             task.spawn(function()
+                -- Step 1: Query Firestore for matching username + code
                 local docName, err = queryByCode(LocalPlayer.Name, code)
                 if not docName then
+                    logError("Check Key failed: " .. tostring(err))
                     SetStatus(err or "Invalid code.")
+                    isVerifying = false   -- unlock so user can try again
                     return
                 end
 
+                -- Step 2: Generate a session token and write it to the document
                 local token = generateToken()
                 if not writeTokenToDoc(docName, token) then
+                    logError("writeTokenToDoc failed during key check")
                     SetStatus("Could not save session. Try again.")
+                    isVerifying = false
                     return
                 end
 
+                -- Step 3: Persist token locally so next launch skips key system
                 saveToken(token)
-                SetStatus("✓ Verified! Loading ExecSync...")
+                logInfo("Key verified — token saved for " .. LocalPlayer.Name)
 
+                -- Step 4: Success feedback, then unload key UI and launch main GUI
+                SetStatus("✓ Verified! Loading ExecSync...")
                 task.wait(1.2)
                 KW:Unload()
                 task.wait(0.3)
@@ -639,7 +638,7 @@ local function BuildKeySystem(onSuccess)
         end
     })
 
-    -- Get Key buttons row — both copy Discord link to clipboard
+    -- Get Key buttons — both copy Discord invite to clipboard
     VerifSection:Button({
         Name = "Get Key (12H)",
         Callback = function()
@@ -663,7 +662,6 @@ local function BuildKeySystem(onSuccess)
     InfoSection:Label("Each code can only be used once.", "Center")
     InfoSection:Label("Premium removes the key system and gives you\naccess to the best features, join our discord\nto learn more", "Center")
 
-    -- Discord sub-section inside right column
     local DiscordSection = KeyPage:Section({ Name = "Discord", Side = 2 })
 
     DiscordSection:Label("Need help or updates? Join our Discord server", "Left")
@@ -676,9 +674,7 @@ local function BuildKeySystem(onSuccess)
         end
     })
 
-    -- Init (required by Kiwisense at the end of setup)
     KW:Init()
-
     logInfo("Key system displayed")
 end
 
