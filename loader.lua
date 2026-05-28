@@ -173,11 +173,30 @@ local function generateToken()
 end
 
 -- ─────────────────────────────────────────────
+--  LOOP CANCELLATION TOKENS
+--  Each token is just a table with a .dead flag.
+--  Any loop that holds a ref checks token.dead
+--  and exits immediately when it flips true.
+--  Call cancelToken(t) to kill a loop cleanly.
+-- ─────────────────────────────────────────────
+local function newToken()
+    return { dead = false }
+end
+local function cancelToken(t)
+    if t then t.dead = true end
+end
+
+-- Active tokens — replaced each time LoadMainScript runs
+local presenceToken  = newToken()
+local settingsToken  = newToken()
+
+-- ─────────────────────────────────────────────
 --  PRESENCE TRACKING
 -- ─────────────────────────────────────────────
 local presenceDocUrl = FIRESTORE_BASE .. "/userPresence/" .. LocalPlayer.Name
 
 local function updatePresence(online)
+    -- fire-and-forget, no loop
     task.spawn(function()
         pcall(function()
             local fields = {
@@ -208,12 +227,18 @@ local function updatePresence(online)
     end)
 end
 
-local function goOnline()
+-- FIX: goOnline now accepts a cancellation token so the heartbeat
+-- loop can be stopped cleanly on eject / logout / game close.
+-- Without this, the old loop kept running after a rejoin, doubling
+-- (then tripling, etc.) the number of concurrent HTTP threads,
+-- which overwhelmed the executor and caused the freeze/crash.
+local function goOnline(token)
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
     task.spawn(function()
-        while true do
+        while not token.dead do
             task.wait(60)
+            if token.dead then break end
             if not LocalPlayer or not LocalPlayer:IsDescendantOf(game) then break end
             pcall(function()
                 httpRequest({
@@ -231,6 +256,7 @@ local function goOnline()
                 })
             end)
         end
+        logInfo("Presence heartbeat loop exited cleanly")
     end)
 end
 
@@ -238,6 +264,9 @@ local offlineSent = false
 local function goOffline()
     if offlineSent then return end
     offlineSent = true
+    -- Kill both background loops immediately so no more HTTP fires
+    cancelToken(presenceToken)
+    cancelToken(settingsToken)
     logInfo("Presence → OFFLINE")
     pcall(function()
         httpRequest({
@@ -345,7 +374,7 @@ local function fetchRemoteSettings()
 end
 
 -- ─────────────────────────────────────────────
---  USER SETTINGS  (Firestore ↔ GUI sync)
+--  USER SETTINGS  (Firestore <-> GUI sync)
 -- ─────────────────────────────────────────────
 local USER_FLAGS_TO_SYNC = {
     "AutoRace", "StartSolo", "RaceSpeed", "MinWaitTime", "AutoVaryWait", "SelectRace",
@@ -467,17 +496,29 @@ end
 
 -- ─────────────────────────────────────────────
 --  INSTANT SETTINGS POLL
+--  FIX: now accepts a cancellation token so the
+--  poll loop dies cleanly on eject/logout/rejoin
+--  instead of piling up duplicate loops each run.
 -- ─────────────────────────────────────────────
-local function startSettingsPoll(ML, username)
+local function startSettingsPoll(ML, username, token)
     local lastKnownModified = 0
 
     task.spawn(function()
-        while true do
-            task.wait(3)
+        -- FIX: stagger startup by 5s so this doesn't race with the
+        -- initial fetchUserSettings call made right after ML:Init().
+        task.wait(5)
+
+        while not token.dead do
+            -- FIX: poll every 10s instead of 3s.
+            -- 3s meant up to 20 concurrent HTTP requests per minute
+            -- from this loop alone, which saturated the executor on rejoin.
+            task.wait(10)
+            if token.dead then break end
 
             local tick = os.time()
-            if tick % 300 < 3 then
+            if tick % 300 < 10 then
                 local s = fetchRemoteSettings()
+                if token.dead then break end
                 if s then
                     if s.killSwitch and s.killSwitch.booleanValue == true then
                         logWarn("Kill switch activated")
@@ -490,7 +531,10 @@ local function startSettingsPoll(ML, username)
                 end
             end
 
+            if token.dead then break end
+
             local fields = fetchUserSettings(username)
+            if token.dead then break end
             if not fields then continue end
 
             local remoteModified = 0
@@ -511,6 +555,7 @@ local function startSettingsPoll(ML, username)
                 notify("ExecSync", "⚡ " .. n .. " setting(s) updated from dashboard", 3)
             end
         end
+        logInfo("Settings poll loop exited cleanly")
     end)
 end
 
@@ -557,20 +602,15 @@ local function applyExecSyncTheme(ML)
             Font                       = IW.FontBody,
             TitleFont                  = IW.FontTitle,
         }
-
         for key, value in pairs(overrides) do
             pcall(function() ML:ChangeTheme(key, value) end)
         end
-
         logInfo("IceWare theme applied via ChangeTheme")
     end)
 end
 
 -- ─────────────────────────────────────────────
 --  GLOBAL STATE CLEANUP
---  Clears any globals the Kiwisense library may
---  have stored, preventing the second instance
---  from picking up the dead first instance's state.
 -- ─────────────────────────────────────────────
 local function clearLibraryGlobals()
     pcall(function()
@@ -580,7 +620,6 @@ local function clearLibraryGlobals()
             end
         end
     end)
-    -- Also clear shared table if the executor exposes it
     pcall(function()
         for k, v in pairs(shared) do
             if type(v) == "table" and (v.Unload or v.Window or v.Notification) then
@@ -595,6 +634,14 @@ end
 -- ─────────────────────────────────────────────
 local function LoadMainScript(username)
     local LoadingTick = os.clock()
+
+    -- FIX: reset the offline gate and issue fresh tokens every time
+    -- LoadMainScript runs (first run OR after a rejoin). Without this,
+    -- offlineSent stays true from the previous session and goOffline()
+    -- silently becomes a no-op, leaving the server stuck as "online".
+    offlineSent     = false
+    presenceToken   = newToken()
+    settingsToken   = newToken()
 
     local ML = loadstring(game:HttpGet(
         "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
@@ -777,12 +824,19 @@ local function LoadMainScript(username)
         end })
 
         Session:Button({ Name = "Eject", Callback = function()
-            logInfo("Eject"); goOffline(); pcall(function() ML:Unload() end)
+            logInfo("Eject")
+            cancelToken(presenceToken)
+            cancelToken(settingsToken)
+            goOffline()
+            pcall(function() ML:Unload() end)
         end })
 
         Session:Button({ Name = "Log Out", Callback = function()
             logInfo("Log Out — clearing session")
-            deleteSessionFile(); goOffline()
+            cancelToken(presenceToken)
+            cancelToken(settingsToken)
+            deleteSessionFile()
+            goOffline()
             notify("ExecSync", "Logged out. Re-run the script to sign in again.", 4)
             task.wait(2); pcall(function() ML:Unload() end)
         end })
@@ -849,15 +903,17 @@ local function LoadMainScript(username)
     end
 
     ML:Init()
-
     task.defer(function() applyExecSyncTheme(ML) end)
 
-    goOnline()
+    -- FIX: start goOnline with the fresh presence token
+    goOnline(presenceToken)
 
+    -- FIX: stagger the initial cloud settings fetch by 2s so it doesn't
+    -- collide with the library's own init HTTP calls on game join
     task.spawn(function()
+        task.wait(2)
         local fields = fetchUserSettings(username)
         if fields then
-            task.wait(0.5)
             local n = applyUserSettings(ML, fields)
             logInfo("Cloud settings applied on load: " .. (n or 0) .. " flags")
         end
@@ -873,7 +929,8 @@ local function LoadMainScript(username)
         })
     end)
 
-    startSettingsPoll(ML, username)
+    -- FIX: pass the fresh settings token so this loop can be killed later
+    startSettingsPoll(ML, username, settingsToken)
     logInfo("Main GUI loaded for " .. tostring(username))
 end
 
@@ -937,24 +994,10 @@ local function BuildKeySystem(onSuccess)
 
                 if onSuccess then
                     task.spawn(function()
-                        -- ── FIX: Properly tear down KW before loading ML ──
-                        -- Set ActiveLib to nil FIRST so notify() stops hitting KW
                         ActiveLib = nil
-
-                        -- Unload the key system GUI
                         pcall(function() KW:Unload() end)
-
-                        -- Clear any globals/shared state the library cached.
-                        -- This prevents the second loadstring() call from
-                        -- returning the same dead instance.
                         clearLibraryGlobals()
-
-                        -- Wait long enough for Roblox to GC the old GUI tree,
-                        -- TweenService connections, and RenderStepped hooks.
-                        -- 0.5s was too short — 2s is reliable.
                         task.wait(2)
-
-                        -- Load main GUI with retry safety
                         local ok, err = pcall(onSuccess, LocalPlayer.Name)
                         if not ok then
                             logError("LoadMainScript failed on first attempt: " .. tostring(err))
