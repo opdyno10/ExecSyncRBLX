@@ -506,47 +506,36 @@ local function startSettingsPoll(ML, username)
 end
 
 -- ─────────────────────────────────────────────
---  FIX: B&W THEME (replaces original applyExecSyncTheme)
---  Only touches Color3 keys — Font, EnumItem, bool, and any
---  other type the library stores in Theme are left completely
---  alone so Kiwisense's built-in font is always preserved.
+--  B&W THEME
+--  Only overrides the specific named Color3 keys below.
+--  Every other theme entry (including Font / EnumItem)
+--  is left exactly as the Kiwisense library sets it.
+--  NO fallback loop — that's what caused white-on-white.
 -- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
     pcall(function()
         if not ML.Theme then return end
 
-        local white     = Color3.fromRGB(255, 255, 255)
-        local offWhite  = Color3.fromRGB(200, 200, 200)
-        local midGray   = Color3.fromRGB(110, 110, 110)
-        local darkGray  = Color3.fromRGB(40,  40,  40)
-        local nearBlack = Color3.fromRGB(18,  18,  18)
-        local black     = Color3.fromRGB(10,  10,  10)
-
-        -- Explicit Color3 mapping for known Kiwisense theme keys.
-        -- Font / EnumItem / boolean keys are intentionally NOT listed here
-        -- so the library's built-in font and enums are never touched.
         local BW = {
-            Background             = black,
-            SecondBackground       = nearBlack,
-            ThirdBackground        = Color3.fromRGB(26, 26, 26),
-            Border                 = darkGray,
-            Accent                 = white,
-            LightAccent            = offWhite,
-            DarkAccent             = midGray,
-            Text                   = white,
-            SubText                = offWhite,
-            DimText                = midGray,
-            ElementBackground      = Color3.fromRGB(22, 22, 22),
-            ElementBorder          = darkGray,
-            SelectedElementBorder  = white,
-            Thumb                  = white,
-            DisabledThumb          = Color3.fromRGB(60, 60, 60),
-            ScrollBar              = Color3.fromRGB(80, 80, 80),
-            NotificationBackground = nearBlack,
-            NotificationBorder     = white,
+            -- Accent colour (replaces library blue)
+            Accent = Color3.fromRGB(255, 255, 255),
+
+            -- Text colours
+            Text    = Color3.fromRGB(255, 255, 255),
+            SubText = Color3.fromRGB(180, 180, 180),
+            DimText = Color3.fromRGB(110, 110, 110),
+
+            -- Toggle / slider thumb
+            Thumb         = Color3.fromRGB(255, 255, 255),
+            DisabledThumb = Color3.fromRGB(55,  55,  55),
+
+            -- Selected highlight border
+            SelectedElementBorder = Color3.fromRGB(255, 255, 255),
+
+            -- Notification border pop
+            NotificationBorder = Color3.fromRGB(255, 255, 255),
         }
 
-        -- Apply explicit Color3 keys first
         for key, color in pairs(BW) do
             if ML.Theme[key] ~= nil then
                 ML.Theme[key] = color
@@ -554,20 +543,7 @@ local function applyExecSyncTheme(ML)
             end
         end
 
-        -- Fallback: any remaining theme key that is STRICTLY a Color3
-        -- gets mapped to B&W by luminance.
-        -- Font, EnumItem, string, boolean, number values are all skipped
-        -- automatically because typeof(value) ~= "Color3".
-        for key, value in pairs(ML.Theme) do
-            if typeof(value) ~= "Color3" then continue end  -- skip Font/EnumItem/etc.
-            if BW[key] then continue end                     -- already handled above
-            local _, s, v = Color3.toHSV(value)
-            local mapped = (s > 0.15 or v > 0.55) and white or black
-            ML.Theme[key] = mapped
-            pcall(function() ML:ChangeTheme(key, mapped) end)
-        end
-
-        logInfo("B&W theme applied — library font preserved")
+        logInfo("B&W theme applied — only accent/text/thumb overridden, library font preserved")
     end)
 end
 
