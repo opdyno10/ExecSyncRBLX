@@ -1,20 +1,21 @@
 -- ╔══════════════════════════════════════════════════════╗
--- ║         ExecSync  v1.4.4  (IceWare Theme)            ║
+-- ║         ExecSync  v1.4.4  (IceWare Theme + Fixed)    ║
 -- ║   ExecSync Key System  +  Kiwisense Main GUI         ║
 -- ╚══════════════════════════════════════════════════════╝
 
 -- ─────────────────────────────────────────────
 --  EXECUTOR COMPATIBILITY SHIMS
 -- ─────────────────────────────────────────────
-if not cloneref        then cloneref        = function(x) return x end end
-if not getgenv         then getgenv         = function()   return _G  end end
-if not gethui          then gethui          = function()   return game:GetService("CoreGui") end end
-if not getcustomasset  then getcustomasset  = function(p)  return "rbxasset://" .. p end end
+if not cloneref       then cloneref       = function(x) return x end end
+if not getgenv        then getgenv        = function()  return _G  end end
+if not gethui         then gethui         = function()  return game:GetService("CoreGui") end end
+if not getcustomasset then getcustomasset = function(p) return "rbxasset://" .. p end end
 
 local Players          = game:GetService("Players")
 local HttpService      = game:GetService("HttpService")
 local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local TeleportService  = game:GetService("TeleportService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
@@ -34,54 +35,47 @@ local QUERY_URL = FIRESTORE_BASE .. ":runQuery"
 --  ICEWARE THEME PALETTE
 -- ─────────────────────────────────────────────
 local IW = {
-    -- Backgrounds
-    Background          = Color3.fromRGB(10,  10,  10),   -- #0a0a0a  (window bg)
-    SecondaryBG         = Color3.fromRGB(15,  15,  15),   -- #0f0f0f
-    ElementBG           = Color3.fromRGB(20,  20,  20),   -- #141414  (buttons / inputs)
-    HoverBG             = Color3.fromRGB(28,  28,  28),   -- #1c1c1c
-    SectionBG           = Color3.fromRGB(13,  13,  13),   -- #0d0d0d
-
-    -- Borders
-    Border              = Color3.fromRGB(35,  35,  35),   -- #232323
-    BorderLight         = Color3.fromRGB(50,  50,  50),   -- #323232
-
-    -- Text
-    Text                = Color3.fromRGB(255, 255, 255),  -- pure white
-    SubText             = Color3.fromRGB(180, 180, 180),  -- #b4b4b4
-    DimText             = Color3.fromRGB(90,  90,  90),   -- #5a5a5a
-    PlaceholderText     = Color3.fromRGB(65,  65,  65),   -- #414141
-
-    -- Accent (IceWare uses white as accent — no color tint)
+    Background          = Color3.fromRGB(10,  10,  10),
+    SecondaryBG         = Color3.fromRGB(15,  15,  15),
+    ElementBG           = Color3.fromRGB(20,  20,  20),
+    HoverBG             = Color3.fromRGB(28,  28,  28),
+    SectionBG           = Color3.fromRGB(13,  13,  13),
+    Border              = Color3.fromRGB(35,  35,  35),
+    BorderLight         = Color3.fromRGB(50,  50,  50),
+    Text                = Color3.fromRGB(255, 255, 255),
+    SubText             = Color3.fromRGB(180, 180, 180),
+    DimText             = Color3.fromRGB(90,  90,  90),
+    PlaceholderText     = Color3.fromRGB(65,  65,  65),
     Accent              = Color3.fromRGB(255, 255, 255),
     AccentDim           = Color3.fromRGB(200, 200, 200),
-
-    -- Toggle / Slider
     ToggleOn            = Color3.fromRGB(255, 255, 255),
     ToggleOff           = Color3.fromRGB(35,  35,  35),
     Thumb               = Color3.fromRGB(255, 255, 255),
     DisabledThumb       = Color3.fromRGB(45,  45,  45),
     SliderFill          = Color3.fromRGB(255, 255, 255),
     SliderTrack         = Color3.fromRGB(30,  30,  30),
-
-    -- Notification
     NotifBG             = Color3.fromRGB(14,  14,  14),
     NotifBorder         = Color3.fromRGB(255, 255, 255),
-
-    -- Dropdown
     DropdownBG          = Color3.fromRGB(12,  12,  12),
     DropdownItem        = Color3.fromRGB(18,  18,  18),
     DropdownSelected    = Color3.fromRGB(28,  28,  28),
-
-    -- Scrollbar
     ScrollBar           = Color3.fromRGB(40,  40,  40),
     ScrollBarHover      = Color3.fromRGB(70,  70,  70),
-
-    -- Font — GothamBold matches IceWare's clean sans-serif header,
-    --        GothamSemibold for body/labels
     FontTitle           = Enum.Font.GothamBold,
     FontBody            = Enum.Font.GothamSemibold,
     FontMono            = Enum.Font.Code,
 }
+
+-- ─────────────────────────────────────────────
+--  SAFE JSON DECODE  (FIX #3 & #4)
+--  Always use this instead of bare JSONDecode.
+-- ─────────────────────────────────────────────
+local function safeJSONDecode(raw)
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local ok, result = pcall(HttpService.JSONDecode, HttpService, raw)
+    if ok then return result end
+    return nil
+end
 
 -- ─────────────────────────────────────────────
 --  UNIVERSAL HTTP WRAPPER
@@ -107,13 +101,15 @@ local NotifQueue = {}
 local function notify(title, body, duration)
     duration = duration or 5
     if ActiveLib and ActiveLib.Notification then
-        ActiveLib:Notification({
-            Name        = title,
-            Description = body,
-            Duration    = duration,
-            Icon        = "116339777575852",
-            IconColor   = IW.Text,
-        })
+        pcall(function()
+            ActiveLib:Notification({
+                Name        = title,
+                Description = body,
+                Duration    = duration,
+                Icon        = "116339777575852",
+                IconColor   = IW.Text,
+            })
+        end)
     else
         table.insert(NotifQueue, { title, body, duration })
         warn("[ExecSync] " .. title .. " — " .. body)
@@ -122,13 +118,15 @@ end
 
 local function flushNotifQueue()
     for _, n in ipairs(NotifQueue) do
-        ActiveLib:Notification({
-            Name        = n[1],
-            Description = n[2],
-            Duration    = n[3],
-            Icon        = "116339777575852",
-            IconColor   = IW.Text,
-        })
+        pcall(function()
+            ActiveLib:Notification({
+                Name        = n[1],
+                Description = n[2],
+                Duration    = n[3],
+                Icon        = "116339777575852",
+                IconColor   = IW.Text,
+            })
+        end)
     end
     NotifQueue = {}
 end
@@ -167,7 +165,7 @@ local function logError(m) remoteLog("ERROR", m) end
 local function generateToken()
     local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     local token = ""
-    math.randomseed(os.time() * math.random(1000, 9999))
+    math.randomseed(os.time())
     for _ = 1, 32 do
         local i = math.random(1, #chars)
         token = token .. chars:sub(i, i)
@@ -289,8 +287,8 @@ local function queryByCode(username, code)
     end)
     if not ok then logError("queryByCode: " .. tostring(res)); return nil, "Network error — check HttpService is enabled." end
     if res.StatusCode ~= 200 then logError("queryByCode HTTP " .. tostring(res.StatusCode)); return nil, "Firestore error (" .. tostring(res.StatusCode) .. ")." end
-    local parsed; ok, parsed = pcall(HttpService.JSONDecode, HttpService, res.Body)
-    if not ok then logError("queryByCode: JSON decode failed"); return nil, "Invalid server response." end
+    local parsed = safeJSONDecode(res.Body)
+    if not parsed then logError("queryByCode: JSON decode failed"); return nil, "Invalid server response." end
     if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
         logWarn("queryByCode: no document matched"); return nil, "Code not found. Double-check your username and code."
     end
@@ -326,8 +324,11 @@ local function queryByToken(token)
         return httpRequest({ Url = QUERY_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
     end)
     if not ok or res.StatusCode ~= 200 then logError("queryByToken failed"); return nil end
-    local parsed = HttpService:JSONDecode(res.Body)
-    if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then logWarn("queryByToken: not found"); return nil end
+    -- FIX #3: safe decode — bare JSONDecode on a bad body crashed here
+    local parsed = safeJSONDecode(res.Body)
+    if not parsed or type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
+        logWarn("queryByToken: not found"); return nil
+    end
     local fields = parsed[1].document.fields
     if fields and fields.username and fields.username.stringValue then
         logInfo("queryByToken → " .. fields.username.stringValue)
@@ -341,7 +342,8 @@ local function fetchRemoteSettings()
         return httpRequest({ Url = FIRESTORE_BASE .. "/settings/global", Method = "GET", Headers = { ["Content-Type"] = "application/json" } })
     end)
     if not ok or res.StatusCode ~= 200 then return nil end
-    local parsed = HttpService:JSONDecode(res.Body)
+    -- FIX #4: was bare JSONDecode — crashes if body is empty or non-JSON
+    local parsed = safeJSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
 
@@ -375,7 +377,8 @@ local function fetchUserSettings(username)
         logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode))
         return nil
     end
-    local parsed = HttpService:JSONDecode(res.Body)
+    -- FIX #3: safe decode
+    local parsed = safeJSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
 
@@ -483,7 +486,7 @@ local function startSettingsPoll(ML, username)
                     if s.killSwitch and s.killSwitch.booleanValue == true then
                         logWarn("Kill switch activated")
                         notify("ExecSync", "Script disabled remotely.", 6)
-                        task.wait(3); goOffline(); ML:Unload(); return
+                        task.wait(3); goOffline(); pcall(function() ML:Unload() end); return
                     end
                     if s.maintenanceMessage and s.maintenanceMessage.stringValue ~= "" then
                         notify("ExecSync – Notice", s.maintenanceMessage.stringValue, 8)
@@ -516,152 +519,66 @@ local function startSettingsPoll(ML, username)
 end
 
 -- ─────────────────────────────────────────────
---  ICEWARE-STYLE THEME APPLICATION
+--  ICEWARE-STYLE THEME  (FIX #1)
+--  The raw GetDescendants() pass over CoreGui/PlayerGui was removed entirely.
+--  Iterating and writing to thousands of system GUI objects (many read-only)
+--  caused hard crashes. Theme is now applied only through ML:ChangeTheme(),
+--  which is the safe, library-supported path.
 -- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
+    if not ML or not ML.Theme then return end
     pcall(function()
-        if not ML.Theme then return end
-
-        -- ── Core colour overrides matching IceWare's monochromatic dark palette ──
         local overrides = {
             -- Window & containers
-            Background              = IW.Background,
-            SecondaryBackground     = IW.SecondaryBG,
-            TertiaryBackground      = IW.SectionBG,
-            ElementBackground       = IW.ElementBG,
-            HoveredElementBackground= IW.HoverBG,
-            SectionBackground       = IW.SectionBG,
-            DropdownBackground      = IW.DropdownBG,
-            DropdownItemBackground  = IW.DropdownItem,
+            Background                 = IW.Background,
+            SecondaryBackground        = IW.SecondaryBG,
+            TertiaryBackground         = IW.SectionBG,
+            ElementBackground          = IW.ElementBG,
+            HoveredElementBackground   = IW.HoverBG,
+            SectionBackground          = IW.SectionBG,
+            DropdownBackground         = IW.DropdownBG,
+            DropdownItemBackground     = IW.DropdownItem,
             DropdownSelectedBackground = IW.DropdownSelected,
-
             -- Borders
-            Border                  = IW.Border,
-            LightBorder             = IW.BorderLight,
-            ElementBorder           = IW.Border,
-            SectionBorder           = IW.Border,
-            SelectedElementBorder   = IW.Text,       -- white highlight on selected
-            NotificationBorder      = IW.Text,       -- white notification border
-
+            Border                     = IW.Border,
+            LightBorder                = IW.BorderLight,
+            ElementBorder              = IW.Border,
+            SectionBorder              = IW.Border,
+            SelectedElementBorder      = IW.Text,
+            NotificationBorder         = IW.Text,
             -- Text
-            Text                    = IW.Text,
-            SubText                 = IW.SubText,
-            DimText                 = IW.DimText,
-            PlaceholderText         = IW.PlaceholderText,
-            HeaderText              = IW.Text,
-            LabelText               = IW.SubText,
-
-            -- Accent (IceWare uses white as its sole accent)
-            Accent                  = IW.Accent,
-            AccentDark              = IW.ElementBG,
-
+            Text                       = IW.Text,
+            SubText                    = IW.SubText,
+            DimText                    = IW.DimText,
+            PlaceholderText            = IW.PlaceholderText,
+            HeaderText                 = IW.Text,
+            LabelText                  = IW.SubText,
+            -- Accent
+            Accent                     = IW.Accent,
+            AccentDark                 = IW.ElementBG,
             -- Toggles & sliders
-            ToggleBackground        = IW.ToggleOff,
-            ToggleEnabledBackground = IW.ToggleOn,
-            Thumb                   = IW.Thumb,
-            DisabledThumb           = IW.DisabledThumb,
-            SliderBackground        = IW.SliderTrack,
-            SliderFill              = IW.SliderFill,
-
+            ToggleBackground           = IW.ToggleOff,
+            ToggleEnabledBackground    = IW.ToggleOn,
+            Thumb                      = IW.Thumb,
+            DisabledThumb              = IW.DisabledThumb,
+            SliderBackground           = IW.SliderTrack,
+            SliderFill                 = IW.SliderFill,
             -- Scrollbar
-            ScrollBar               = IW.ScrollBar,
-            ScrollBarHover          = IW.ScrollBarHover,
-
+            ScrollBar                  = IW.ScrollBar,
+            ScrollBarHover             = IW.ScrollBarHover,
             -- Notifications
-            NotificationBackground  = IW.NotifBG,
-            NotificationIcon        = IW.Text,
-
-            -- Font — GothamBold for titles, GothamSemibold for body
-            Font                    = IW.FontBody,
-            TitleFont               = IW.FontTitle,
+            NotificationBackground     = IW.NotifBG,
+            NotificationIcon           = IW.Text,
+            -- Font
+            Font                       = IW.FontBody,
+            TitleFont                  = IW.FontTitle,
         }
 
         for key, value in pairs(overrides) do
-            if ML.Theme[key] ~= nil then
-                ML.Theme[key] = value
-                pcall(function() ML:ChangeTheme(key, value) end)
-            else
-                -- attempt blind set even if not pre-declared in the theme table
-                pcall(function() ML:ChangeTheme(key, value) end)
-            end
+            pcall(function() ML:ChangeTheme(key, value) end)
         end
 
-        -- ── Additional raw GuiObject styling pass ──
-        -- Walk the CoreGui/PlayerGui tree and re-style any ExecSync frames directly,
-        -- ensuring the background/border colours are exactly right even if the
-        -- library doesn't expose every key through ChangeTheme.
-        task.defer(function()
-            pcall(function()
-                local roots = { gethui(), PlayerGui }
-                for _, root in ipairs(roots) do
-                    for _, desc in ipairs(root:GetDescendants()) do
-                        -- Re-colour frames that look like window/section backgrounds
-                        if desc:IsA("Frame") or desc:IsA("ScrollingFrame") then
-                            local bg = desc.BackgroundColor3
-                            -- If the element was a mid-grey placeholder, push it to IceWare dark
-                            local r, g, b = bg.R * 255, bg.G * 255, bg.B * 255
-                            if r > 25 and r < 60 and math.abs(r - g) < 8 and math.abs(g - b) < 8 then
-                                desc.BackgroundColor3 = IW.ElementBG
-                            elseif r <= 25 and math.abs(r - g) < 5 and math.abs(g - b) < 5 then
-                                desc.BackgroundColor3 = IW.Background
-                            end
-                            -- Enforce border transparency / thinness
-                            if desc.BorderSizePixel and desc.BorderSizePixel > 0 then
-                                desc.BorderColor3 = IW.Border
-                            end
-                        end
-
-                        -- Enforce text colours on labels
-                        if desc:IsA("TextLabel") then
-                            if desc.TextColor3 ~= IW.Text and desc.TextColor3 ~= IW.SubText then
-                                local tr = desc.TextColor3.R * 255
-                                if tr > 150 then
-                                    desc.TextColor3 = IW.Text
-                                elseif tr > 80 then
-                                    desc.TextColor3 = IW.SubText
-                                else
-                                    desc.TextColor3 = IW.DimText
-                                end
-                            end
-                            -- Apply Gotham font family
-                            pcall(function()
-                                if desc.TextSize and desc.TextSize >= 16 then
-                                    desc.Font = IW.FontTitle
-                                else
-                                    desc.Font = IW.FontBody
-                                end
-                            end)
-                        end
-
-                        if desc:IsA("TextButton") or desc:IsA("TextBox") then
-                            pcall(function() desc.Font = IW.FontBody end)
-                            if desc:IsA("TextButton") then
-                                desc.BackgroundColor3 = IW.ElementBG
-                                desc.TextColor3 = IW.Text
-                                desc.BorderColor3 = IW.Border
-                            end
-                        end
-
-                        -- UICorner — IceWare uses very subtle corners (2–4 px)
-                        if desc:IsA("UICorner") then
-                            if desc.CornerRadius.Offset > 6 then
-                                desc.CornerRadius = UDim.new(0, 4)
-                            end
-                        end
-
-                        -- UIStroke — use border colour
-                        if desc:IsA("UIStroke") then
-                            desc.Color = IW.Border
-                            if desc.Thickness > 1.5 then
-                                desc.Thickness = 1
-                            end
-                        end
-                    end
-                end
-            end)
-        end)
-
-        logInfo("IceWare theme applied — GothamBold/SemiBold, monochromatic dark palette")
+        logInfo("IceWare theme applied via ChangeTheme")
     end)
 end
 
@@ -682,7 +599,7 @@ local function LoadMainScript(username)
         Name      = "ExecSync",
         Version   = "v1.4.4",
         Logo      = "135215559087473",
-        FadeSpeed = 0.20,   -- slightly snappier to feel more like IceWare
+        FadeSpeed = 0.20,
     })
 
     local Watermark = ML:Watermark("ExecSync | Driving Empire", "135215559087473")
@@ -760,7 +677,7 @@ local function LoadMainScript(username)
         local Misc      = Pages["Misc"]:Section({ Name = "Misc",         Side = 2 })
         local Webhook   = Pages["Misc"]:Section({ Name = "Webhook",      Side = 2 })
 
-        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",       Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",        Default = false, Callback = function() end })
         Rewards:Toggle({ Name = "Auto Double Daily Rewards",   Flag = "AutoDoubleDailyRewards",  Default = false, Callback = function() end })
         Rewards:Toggle({ Name = "Auto Claim AD Rewards",       Flag = "AutoADRewards",           Default = false, Callback = function() end })
         Rewards:Button({ Name = "Redeem All Codes",            Callback = function() end })
@@ -798,19 +715,42 @@ local function LoadMainScript(username)
         Session:Label("Place ID: " .. tostring(game.PlaceId), "Center")
 
         Session:Button({ Name = "Rejoin", Callback = function()
-            game:GetService("TeleportService"):Teleport(game.PlaceId)
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId)
+            end)
         end })
 
+        -- FIX #2: Server Hop was completely unguarded — HTTP, JSON decode,
+        -- nil table access and teleport all crash without pcall.
         Session:Button({ Name = "Server Hop", Callback = function()
-            local TS = game:GetService("TeleportService")
-            local servers = HttpService:JSONDecode(game:HttpGet(
-                "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
-            ))
-            for _, sv in ipairs(servers.data) do
-                if sv.id ~= game.JobId and sv.playing < sv.maxPlayers then
-                    TS:TeleportToPlaceInstance(game.PlaceId, sv.id); return
+            task.spawn(function()
+                local ok, raw = pcall(function()
+                    return game:HttpGet(
+                        "https://games.roblox.com/v1/games/" .. game.PlaceId
+                        .. "/servers/Public?sortOrder=Asc&limit=100"
+                    )
+                end)
+                if not ok then notify("ExecSync", "Server list fetch failed.", 3); return end
+
+                local data = safeJSONDecode(raw)
+                if not data or type(data.data) ~= "table" then
+                    notify("ExecSync", "No server data returned.", 3); return
                 end
-            end
+
+                for _, sv in ipairs(data.data) do
+                    if sv.id ~= game.JobId and sv.playing and sv.maxPlayers
+                       and sv.playing < sv.maxPlayers then
+                        local teleOk, teleErr = pcall(function()
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, sv.id)
+                        end)
+                        if not teleOk then
+                            notify("ExecSync", "Teleport failed: " .. tostring(teleErr), 4)
+                        end
+                        return
+                    end
+                end
+                notify("ExecSync", "No available servers found.", 3)
+            end)
         end })
 
         Session:Button({ Name = "Pull Settings from Cloud", Callback = function()
@@ -821,7 +761,7 @@ local function LoadMainScript(username)
                     local n = applyUserSettings(ML, fields)
                     notify("ExecSync", "Loaded " .. (n or 0) .. " settings from cloud ✓", 4)
                 else
-                    notify("ExecSync", "No cloud settings found — check Firestore rules.", 4)
+                    notify("ExecSync", "No cloud settings found.", 4)
                 end
             end)
         end })
@@ -831,14 +771,14 @@ local function LoadMainScript(username)
         end })
 
         Session:Button({ Name = "Eject", Callback = function()
-            logInfo("Eject"); goOffline(); ML:Unload()
+            logInfo("Eject"); goOffline(); pcall(function() ML:Unload() end)
         end })
 
         Session:Button({ Name = "Log Out", Callback = function()
             logInfo("Log Out — clearing session")
             deleteSessionFile(); goOffline()
             notify("ExecSync", "Logged out. Re-run the script to sign in again.", 4)
-            task.wait(2); ML:Unload()
+            task.wait(2); pcall(function() ML:Unload() end)
         end })
 
         Session:Button({ Name = "Join Discord", Callback = function()
@@ -904,11 +844,8 @@ local function LoadMainScript(username)
 
     ML:Init()
 
-    -- Apply IceWare theme immediately after init, then again after a short delay
-    -- to catch any elements the library creates asynchronously.
+    -- Apply theme once after init — no repeated calls, no raw GUI pass
     task.defer(function() applyExecSyncTheme(ML) end)
-    task.delay(0.5, function() applyExecSyncTheme(ML) end)
-    task.delay(1.5, function() applyExecSyncTheme(ML) end)
 
     goOnline()
 
@@ -921,20 +858,22 @@ local function LoadMainScript(username)
         end
     end)
 
-    ML:Notification({
-        Name        = "ExecSync",
-        Description = "Loaded in: " .. string.format("%.4f", os.clock() - LoadingTick) .. "s",
-        Duration    = 5,
-        Icon        = "116339777575852",
-        IconColor   = IW.Text,
-    })
+    pcall(function()
+        ML:Notification({
+            Name        = "ExecSync",
+            Description = "Loaded in: " .. string.format("%.4f", os.clock() - LoadingTick) .. "s",
+            Duration    = 5,
+            Icon        = "116339777575852",
+            IconColor   = IW.Text,
+        })
+    end)
 
     startSettingsPoll(ML, username)
     logInfo("Main GUI loaded for " .. tostring(username))
 end
 
 -- ─────────────────────────────────────────────
---  KEY SYSTEM  (same IceWare theme)
+--  KEY SYSTEM
 -- ─────────────────────────────────────────────
 local function BuildKeySystem(onSuccess)
     local KW = loadstring(game:HttpGet(
@@ -993,9 +932,15 @@ local function BuildKeySystem(onSuccess)
 
                 if onSuccess then
                     task.spawn(function()
-                        onSuccess(LocalPlayer.Name)
-                        task.wait(2)
+                        -- CRITICAL: tear down KW *before* loading ML.
+                        -- Having two Kiwisense instances alive at the same time
+                        -- corrupts shared TweenService connections and CoreGui
+                        -- state, causing 'nil Tween', 'nil Connection', and
+                        -- 'missing method Create' crashes on the new instance.
+                        ActiveLib = nil          -- stop notify() from hitting dying KW
                         pcall(function() KW:Unload() end)
+                        task.wait(0.5)           -- let Roblox GC the old GUI tree
+                        onSuccess(LocalPlayer.Name)
                     end)
                 end
             end)
@@ -1024,11 +969,7 @@ local function BuildKeySystem(onSuccess)
     end })
 
     KW:Init()
-
     task.defer(function() applyExecSyncTheme(KW) end)
-    task.delay(0.5, function() applyExecSyncTheme(KW) end)
-    task.delay(1.5, function() applyExecSyncTheme(KW) end)
-
     logInfo("Key system displayed for " .. LocalPlayer.Name)
 end
 
