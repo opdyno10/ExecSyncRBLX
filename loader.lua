@@ -76,7 +76,7 @@ end
 --  REMOTE LOGGER
 -- ─────────────────────────────────────────────
 local function remoteLog(level, message)
-    print("[ExecSync][" .. level .. "] " .. tostring(message))
+    
     task.spawn(function()
         pcall(function()
             httpRequest({
@@ -413,8 +413,7 @@ end
 local function LoadMainScript(username)
     local LoadingTick = os.clock()
 
-    -- Mark user as online now that auth is confirmed
-    goOnline()
+
 
     local ML = loadstring(game:HttpGet(
         "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
@@ -702,7 +701,7 @@ local function LoadMainScript(username)
 
     -- Init BEFORE notification so ML.Tween exists
     ML:Init()
-
+    goOnline()
     ML:Notification({
         Name        = "ExecSync",
         Description = "Loaded in: " .. string.format("%.4f", os.clock() - LoadingTick)
@@ -800,7 +799,7 @@ local function BuildKeySystem(onSuccess)
                 task.wait(1.5)
 
                 KW:Unload()
-                task.wait(0.5)
+                task.wait(2)
                 isVerifying = false
 
                 if onSuccess then
