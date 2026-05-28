@@ -27,6 +27,18 @@ local FIREBASE_PROJECT = "studio-9760542617-d373c"
 local SESSION_FILE     = "execsync_session.txt"
 local DISCORD_INVITE   = "https://discord.gg/execsync"
 
+-- FIX: cache-busting helper.
+-- Executors (Synapse, Script-Ware, etc.) cache game:HttpGet responses
+-- by URL. If the URL is the same both times, the executor returns the
+-- same bytecode chunk — including the dead upvalues (nil TweenService,
+-- nil connections) left behind by KW:Unload(). Appending ?t=<epoch>
+-- makes every load a unique URL, forcing a fresh HTTP fetch and a
+-- completely fresh Lua execution environment with live upvalues.
+local LIB_URL_BASE = "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
+local function freshLibUrl()
+    return LIB_URL_BASE .. "?t=" .. tostring(os.time())
+end
+
 local FIRESTORE_BASE = "https://firestore.googleapis.com/v1/projects/"
     .. FIREBASE_PROJECT .. "/databases/(default)/documents"
 local QUERY_URL = FIRESTORE_BASE .. ":runQuery"
@@ -173,22 +185,38 @@ local function generateToken()
 end
 
 -- ─────────────────────────────────────────────
---  LOOP CANCELLATION TOKENS
---  Each token is just a table with a .dead flag.
---  Any loop that holds a ref checks token.dead
---  and exits immediately when it flips true.
---  Call cancelToken(t) to kill a loop cleanly.
+--  CANCELLATION TOKENS
+--  A token is just { dead = false }.
+--  Any loop that owns one checks token.dead
+--  each iteration and exits when true.
 -- ─────────────────────────────────────────────
-local function newToken()
-    return { dead = false }
-end
-local function cancelToken(t)
-    if t then t.dead = true end
+local function newToken()   return { dead = false } end
+local function cancelToken(t) if t then t.dead = true end end
+
+local presenceToken = newToken()
+local settingsToken = newToken()
+
+-- ─────────────────────────────────────────────
+--  CONNECTION REGISTRY
+--  FIX: track every RBXScriptConnection we make
+--  so they can all be disconnected in one call
+--  before loading the next UI instance.
+--  Without this, stale connections keep firing
+--  into the dead first-instance's closures.
+-- ─────────────────────────────────────────────
+local activeConnections = {}
+
+local function trackConnection(conn)
+    table.insert(activeConnections, conn)
+    return conn
 end
 
--- Active tokens — replaced each time LoadMainScript runs
-local presenceToken  = newToken()
-local settingsToken  = newToken()
+local function disconnectAll()
+    for _, conn in ipairs(activeConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    activeConnections = {}
+end
 
 -- ─────────────────────────────────────────────
 --  PRESENCE TRACKING
@@ -196,7 +224,6 @@ local settingsToken  = newToken()
 local presenceDocUrl = FIRESTORE_BASE .. "/userPresence/" .. LocalPlayer.Name
 
 local function updatePresence(online)
-    -- fire-and-forget, no loop
     task.spawn(function()
         pcall(function()
             local fields = {
@@ -227,11 +254,6 @@ local function updatePresence(online)
     end)
 end
 
--- FIX: goOnline now accepts a cancellation token so the heartbeat
--- loop can be stopped cleanly on eject / logout / game close.
--- Without this, the old loop kept running after a rejoin, doubling
--- (then tripling, etc.) the number of concurrent HTTP threads,
--- which overwhelmed the executor and caused the freeze/crash.
 local function goOnline(token)
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
@@ -264,9 +286,9 @@ local offlineSent = false
 local function goOffline()
     if offlineSent then return end
     offlineSent = true
-    -- Kill both background loops immediately so no more HTTP fires
     cancelToken(presenceToken)
     cancelToken(settingsToken)
+    disconnectAll()
     logInfo("Presence → OFFLINE")
     pcall(function()
         httpRequest({
@@ -286,9 +308,9 @@ local function goOffline()
 end
 
 pcall(function() game:BindToClose(goOffline) end)
-LocalPlayer.AncestryChanged:Connect(function()
+trackConnection(LocalPlayer.AncestryChanged:Connect(function()
     if not LocalPlayer:IsDescendantOf(game) then goOffline() end
-end)
+end))
 
 -- ─────────────────────────────────────────────
 --  FIRESTORE HELPERS
@@ -374,7 +396,7 @@ local function fetchRemoteSettings()
 end
 
 -- ─────────────────────────────────────────────
---  USER SETTINGS  (Firestore <-> GUI sync)
+--  USER SETTINGS
 -- ─────────────────────────────────────────────
 local USER_FLAGS_TO_SYNC = {
     "AutoRace", "StartSolo", "RaceSpeed", "MinWaitTime", "AutoVaryWait", "SelectRace",
@@ -395,14 +417,8 @@ local function fetchUserSettings(username)
             Headers = { ["Content-Type"] = "application/json" },
         })
     end)
-    if not ok then
-        logWarn("fetchUserSettings: network error — " .. tostring(res))
-        return nil
-    end
-    if res.StatusCode ~= 200 then
-        logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode))
-        return nil
-    end
+    if not ok then logWarn("fetchUserSettings: network error — " .. tostring(res)); return nil end
+    if res.StatusCode ~= 200 then logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode)); return nil end
     local parsed = safeJSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
@@ -422,11 +438,8 @@ local function applyUserSettings(ML, fields)
             end
             if val ~= nil then
                 local ok, err = pcall(function() flag:Set(val) end)
-                if ok then
-                    applied = applied + 1
-                else
-                    logWarn("applyUserSettings: flag '" .. flagName .. "' Set() failed — " .. tostring(err))
-                end
+                if ok then applied = applied + 1
+                else logWarn("applyUserSettings: flag '" .. flagName .. "' Set() failed — " .. tostring(err)) end
             end
         else
             if flagName ~= "lastModified" then
@@ -474,9 +487,7 @@ end
 -- ─────────────────────────────────────────────
 --  SESSION HELPERS
 -- ─────────────────────────────────────────────
-local function saveToken(t)
-    pcall(function() writefile(SESSION_FILE, t) end)
-end
+local function saveToken(t)  pcall(function() writefile(SESSION_FILE, t) end) end
 
 local function readToken()
     local exists = false
@@ -495,23 +506,13 @@ local function deleteSessionFile()
 end
 
 -- ─────────────────────────────────────────────
---  INSTANT SETTINGS POLL
---  FIX: now accepts a cancellation token so the
---  poll loop dies cleanly on eject/logout/rejoin
---  instead of piling up duplicate loops each run.
+--  SETTINGS POLL
 -- ─────────────────────────────────────────────
 local function startSettingsPoll(ML, username, token)
     local lastKnownModified = 0
-
     task.spawn(function()
-        -- FIX: stagger startup by 5s so this doesn't race with the
-        -- initial fetchUserSettings call made right after ML:Init().
         task.wait(5)
-
         while not token.dead do
-            -- FIX: poll every 10s instead of 3s.
-            -- 3s meant up to 20 concurrent HTTP requests per minute
-            -- from this loop alone, which saturated the executor on rejoin.
             task.wait(10)
             if token.dead then break end
 
@@ -532,7 +533,6 @@ local function startSettingsPoll(ML, username, token)
             end
 
             if token.dead then break end
-
             local fields = fetchUserSettings(username)
             if token.dead then break end
             if not fields then continue end
@@ -545,12 +545,11 @@ local function startSettingsPoll(ML, username, token)
                     remoteModified = fields.lastModified.doubleValue or 0
                 end
             end
-
             if remoteModified <= lastKnownModified then continue end
 
             local n = applyUserSettings(ML, fields)
             lastKnownModified = remoteModified
-            logInfo("Instant sync: " .. (n or 0) .. " flags updated (lastModified=" .. tostring(remoteModified) .. ")")
+            logInfo("Instant sync: " .. (n or 0) .. " flags updated")
             if n and n > 0 then
                 notify("ExecSync", "⚡ " .. n .. " setting(s) updated from dashboard", 3)
             end
@@ -610,9 +609,37 @@ local function applyExecSyncTheme(ML)
 end
 
 -- ─────────────────────────────────────────────
---  GLOBAL STATE CLEANUP
+--  FULL UNLOAD
+--  FIX: implements the proper unload pattern:
+--  1. cancel all background loops via tokens
+--  2. disconnect all tracked RBXScriptConnections
+--  3. nil ActiveLib so notify() stops firing
+--  4. call KW/ML:Unload() inside pcall
+--  5. clear _G / shared of any library globals
+--  6. wait for GC before loading the next instance
 -- ─────────────────────────────────────────────
-local function clearLibraryGlobals()
+local function fullUnload(lib)
+    -- Step 1: kill loops
+    cancelToken(presenceToken)
+    cancelToken(settingsToken)
+
+    -- Step 2: disconnect all our connections
+    disconnectAll()
+
+    -- Step 3: stop notify() hitting the dying lib
+    ActiveLib = nil
+
+    -- Step 4: let the library clean up its own internals
+    if lib then
+        pcall(function() lib:Unload() end)
+    end
+
+    -- Step 5: wipe any globals the library may have cached.
+    -- This is the KEY fix for the nil Tween crash:
+    -- executors cache loadstring chunks by URL. If _G or shared
+    -- holds a reference to the old lib table, the cached chunk's
+    -- upvalues (TweenService, connections, etc.) stay dead and
+    -- the second load inherits them. Clearing forces a fresh env.
     pcall(function()
         for k, v in pairs(_G) do
             if type(v) == "table" and (v.Unload or v.Window or v.Notification) then
@@ -627,6 +654,10 @@ local function clearLibraryGlobals()
             end
         end
     end)
+
+    -- Step 6: give Roblox time to GC the old GUI tree and
+    -- TweenService bindings before the next instance starts
+    task.wait(2)
 end
 
 -- ─────────────────────────────────────────────
@@ -635,17 +666,16 @@ end
 local function LoadMainScript(username)
     local LoadingTick = os.clock()
 
-    -- FIX: reset the offline gate and issue fresh tokens every time
-    -- LoadMainScript runs (first run OR after a rejoin). Without this,
-    -- offlineSent stays true from the previous session and goOffline()
-    -- silently becomes a no-op, leaving the server stuck as "online".
-    offlineSent     = false
-    presenceToken   = newToken()
-    settingsToken   = newToken()
+    -- Reset session state for this load
+    offlineSent   = false
+    presenceToken = newToken()
+    settingsToken = newToken()
 
-    local ML = loadstring(game:HttpGet(
-        "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
-    ))()
+    -- FIX: cache-bust the URL so the executor fetches a completely
+    -- fresh copy of the library with live upvalues (TweenService,
+    -- RunService, etc.) instead of reusing the dead cached chunk
+    -- from the previous KW instance that was Unload()ed.
+    local ML = loadstring(game:HttpGet(freshLibUrl()))()
 
     ActiveLib = ML
     flushNotifQueue()
@@ -770,9 +800,7 @@ local function LoadMainScript(username)
         Session:Label("Place ID: " .. tostring(game.PlaceId), "Center")
 
         Session:Button({ Name = "Rejoin", Callback = function()
-            pcall(function()
-                TeleportService:Teleport(game.PlaceId)
-            end)
+            pcall(function() TeleportService:Teleport(game.PlaceId) end)
         end })
 
         Session:Button({ Name = "Server Hop", Callback = function()
@@ -784,12 +812,10 @@ local function LoadMainScript(username)
                     )
                 end)
                 if not ok then notify("ExecSync", "Server list fetch failed.", 3); return end
-
                 local data = safeJSONDecode(raw)
                 if not data or type(data.data) ~= "table" then
                     notify("ExecSync", "No server data returned.", 3); return
                 end
-
                 for _, sv in ipairs(data.data) do
                     if sv.id ~= game.JobId and sv.playing and sv.maxPlayers
                        and sv.playing < sv.maxPlayers then
@@ -825,16 +851,12 @@ local function LoadMainScript(username)
 
         Session:Button({ Name = "Eject", Callback = function()
             logInfo("Eject")
-            cancelToken(presenceToken)
-            cancelToken(settingsToken)
             goOffline()
             pcall(function() ML:Unload() end)
         end })
 
         Session:Button({ Name = "Log Out", Callback = function()
             logInfo("Log Out — clearing session")
-            cancelToken(presenceToken)
-            cancelToken(settingsToken)
             deleteSessionFile()
             goOffline()
             notify("ExecSync", "Logged out. Re-run the script to sign in again.", 4)
@@ -870,7 +892,6 @@ local function LoadMainScript(username)
             Items = { "In","Out","InOut" }, Default = "Out", MaxSize = 80, Callback = function() end })
     end
 
-    -- ── Configs subpage ──
     do
         local SaveLoad = SettingsSub["Configs"]:Section({ Name = "Save / Load", Side = 1 })
         local Auto     = SettingsSub["Configs"]:Section({ Name = "Autoload",    Side = 2 })
@@ -887,7 +908,6 @@ local function LoadMainScript(username)
         Auto:Button({ Name = "Remove Autoload Config",          Callback = function() end })
     end
 
-    -- ── Theme subpage ──
     do
         local ThemeSec = SettingsSub["Theme"]:Section({ Name = "Colour Overrides", Side = 1 })
         local FontSec  = SettingsSub["Theme"]:Section({ Name = "Typography",       Side = 2 })
@@ -897,19 +917,14 @@ local function LoadMainScript(username)
             task.defer(function() applyExecSyncTheme(ML) end)
             notify("ExecSync", "IceWare theme re-applied ✓", 3)
         end })
-
         FontSec:Label("Font: GothamBold (titles)", "Left")
         FontSec:Label("Font: GothamSemibold (body)", "Left")
     end
 
     ML:Init()
     task.defer(function() applyExecSyncTheme(ML) end)
-
-    -- FIX: start goOnline with the fresh presence token
     goOnline(presenceToken)
 
-    -- FIX: stagger the initial cloud settings fetch by 2s so it doesn't
-    -- collide with the library's own init HTTP calls on game join
     task.spawn(function()
         task.wait(2)
         local fields = fetchUserSettings(username)
@@ -929,7 +944,6 @@ local function LoadMainScript(username)
         })
     end)
 
-    -- FIX: pass the fresh settings token so this loop can be killed later
     startSettingsPoll(ML, username, settingsToken)
     logInfo("Main GUI loaded for " .. tostring(username))
 end
@@ -938,10 +952,9 @@ end
 --  KEY SYSTEM
 -- ─────────────────────────────────────────────
 local function BuildKeySystem(onSuccess)
-    local KW = loadstring(game:HttpGet(
-        "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
-    ))()
-
+    -- FIX: cache-bust here too so the key system itself always
+    -- gets a fresh library instance with live internal upvalues
+    local KW = loadstring(game:HttpGet(freshLibUrl()))()
     ActiveLib = KW
 
     local Win = KW:Window({
@@ -952,7 +965,6 @@ local function BuildKeySystem(onSuccess)
     })
 
     local KeyPage = Win:Page({ Name = "Key System", Icon = "116339777575852", Columns = 2 })
-
     local VerifSection = KeyPage:Section({ Name = "Key Verification", Side = 1 })
     VerifSection:Label("Enter your 5-digit code to unlock access", "Center")
 
@@ -994,20 +1006,15 @@ local function BuildKeySystem(onSuccess)
 
                 if onSuccess then
                     task.spawn(function()
-                        ActiveLib = nil
-                        pcall(function() KW:Unload() end)
-                        clearLibraryGlobals()
-                        task.wait(2)
+                        -- Full unload: stops loops, disconnects events,
+                        -- clears globals, waits for GC — then loads fresh
+                        fullUnload(KW)
                         local ok, err = pcall(onSuccess, LocalPlayer.Name)
                         if not ok then
-                            logError("LoadMainScript failed on first attempt: " .. tostring(err))
+                            logError("LoadMainScript failed: " .. tostring(err))
                             warn("[ExecSync] Retrying main GUI load…")
                             task.wait(1)
-                            local ok2, err2 = pcall(onSuccess, LocalPlayer.Name)
-                            if not ok2 then
-                                logError("LoadMainScript retry also failed: " .. tostring(err2))
-                                warn("[ExecSync] FATAL: could not load main GUI — " .. tostring(err2))
-                            end
+                            pcall(onSuccess, LocalPlayer.Name)
                         end
                     end)
                 end
