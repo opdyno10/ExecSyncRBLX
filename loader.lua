@@ -67,8 +67,7 @@ local IW = {
 }
 
 -- ─────────────────────────────────────────────
---  SAFE JSON DECODE  (FIX #3 & #4)
---  Always use this instead of bare JSONDecode.
+--  SAFE JSON DECODE
 -- ─────────────────────────────────────────────
 local function safeJSONDecode(raw)
     if type(raw) ~= "string" or raw == "" then return nil end
@@ -324,7 +323,6 @@ local function queryByToken(token)
         return httpRequest({ Url = QUERY_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
     end)
     if not ok or res.StatusCode ~= 200 then logError("queryByToken failed"); return nil end
-    -- FIX #3: safe decode — bare JSONDecode on a bad body crashed here
     local parsed = safeJSONDecode(res.Body)
     if not parsed or type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
         logWarn("queryByToken: not found"); return nil
@@ -342,7 +340,6 @@ local function fetchRemoteSettings()
         return httpRequest({ Url = FIRESTORE_BASE .. "/settings/global", Method = "GET", Headers = { ["Content-Type"] = "application/json" } })
     end)
     if not ok or res.StatusCode ~= 200 then return nil end
-    -- FIX #4: was bare JSONDecode — crashes if body is empty or non-JSON
     local parsed = safeJSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
@@ -377,7 +374,6 @@ local function fetchUserSettings(username)
         logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode))
         return nil
     end
-    -- FIX #3: safe decode
     local parsed = safeJSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
@@ -519,17 +515,12 @@ local function startSettingsPoll(ML, username)
 end
 
 -- ─────────────────────────────────────────────
---  ICEWARE-STYLE THEME  (FIX #1)
---  The raw GetDescendants() pass over CoreGui/PlayerGui was removed entirely.
---  Iterating and writing to thousands of system GUI objects (many read-only)
---  caused hard crashes. Theme is now applied only through ML:ChangeTheme(),
---  which is the safe, library-supported path.
+--  ICEWARE THEME
 -- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
     if not ML or not ML.Theme then return end
     pcall(function()
         local overrides = {
-            -- Window & containers
             Background                 = IW.Background,
             SecondaryBackground        = IW.SecondaryBG,
             TertiaryBackground         = IW.SectionBG,
@@ -539,37 +530,30 @@ local function applyExecSyncTheme(ML)
             DropdownBackground         = IW.DropdownBG,
             DropdownItemBackground     = IW.DropdownItem,
             DropdownSelectedBackground = IW.DropdownSelected,
-            -- Borders
             Border                     = IW.Border,
             LightBorder                = IW.BorderLight,
             ElementBorder              = IW.Border,
             SectionBorder              = IW.Border,
             SelectedElementBorder      = IW.Text,
             NotificationBorder         = IW.Text,
-            -- Text
             Text                       = IW.Text,
             SubText                    = IW.SubText,
             DimText                    = IW.DimText,
             PlaceholderText            = IW.PlaceholderText,
             HeaderText                 = IW.Text,
             LabelText                  = IW.SubText,
-            -- Accent
             Accent                     = IW.Accent,
             AccentDark                 = IW.ElementBG,
-            -- Toggles & sliders
             ToggleBackground           = IW.ToggleOff,
             ToggleEnabledBackground    = IW.ToggleOn,
             Thumb                      = IW.Thumb,
             DisabledThumb              = IW.DisabledThumb,
             SliderBackground           = IW.SliderTrack,
             SliderFill                 = IW.SliderFill,
-            -- Scrollbar
             ScrollBar                  = IW.ScrollBar,
             ScrollBarHover             = IW.ScrollBarHover,
-            -- Notifications
             NotificationBackground     = IW.NotifBG,
             NotificationIcon           = IW.Text,
-            -- Font
             Font                       = IW.FontBody,
             TitleFont                  = IW.FontTitle,
         }
@@ -579,6 +563,30 @@ local function applyExecSyncTheme(ML)
         end
 
         logInfo("IceWare theme applied via ChangeTheme")
+    end)
+end
+
+-- ─────────────────────────────────────────────
+--  GLOBAL STATE CLEANUP
+--  Clears any globals the Kiwisense library may
+--  have stored, preventing the second instance
+--  from picking up the dead first instance's state.
+-- ─────────────────────────────────────────────
+local function clearLibraryGlobals()
+    pcall(function()
+        for k, v in pairs(_G) do
+            if type(v) == "table" and (v.Unload or v.Window or v.Notification) then
+                _G[k] = nil
+            end
+        end
+    end)
+    -- Also clear shared table if the executor exposes it
+    pcall(function()
+        for k, v in pairs(shared) do
+            if type(v) == "table" and (v.Unload or v.Window or v.Notification) then
+                shared[k] = nil
+            end
+        end
     end)
 end
 
@@ -720,8 +728,6 @@ local function LoadMainScript(username)
             end)
         end })
 
-        -- FIX #2: Server Hop was completely unguarded — HTTP, JSON decode,
-        -- nil table access and teleport all crash without pcall.
         Session:Button({ Name = "Server Hop", Callback = function()
             task.spawn(function()
                 local ok, raw = pcall(function()
@@ -844,7 +850,6 @@ local function LoadMainScript(username)
 
     ML:Init()
 
-    -- Apply theme once after init — no repeated calls, no raw GUI pass
     task.defer(function() applyExecSyncTheme(ML) end)
 
     goOnline()
@@ -932,15 +937,35 @@ local function BuildKeySystem(onSuccess)
 
                 if onSuccess then
                     task.spawn(function()
-                        -- CRITICAL: tear down KW *before* loading ML.
-                        -- Having two Kiwisense instances alive at the same time
-                        -- corrupts shared TweenService connections and CoreGui
-                        -- state, causing 'nil Tween', 'nil Connection', and
-                        -- 'missing method Create' crashes on the new instance.
-                        ActiveLib = nil          -- stop notify() from hitting dying KW
+                        -- ── FIX: Properly tear down KW before loading ML ──
+                        -- Set ActiveLib to nil FIRST so notify() stops hitting KW
+                        ActiveLib = nil
+
+                        -- Unload the key system GUI
                         pcall(function() KW:Unload() end)
-                        task.wait(0.5)           -- let Roblox GC the old GUI tree
-                        onSuccess(LocalPlayer.Name)
+
+                        -- Clear any globals/shared state the library cached.
+                        -- This prevents the second loadstring() call from
+                        -- returning the same dead instance.
+                        clearLibraryGlobals()
+
+                        -- Wait long enough for Roblox to GC the old GUI tree,
+                        -- TweenService connections, and RenderStepped hooks.
+                        -- 0.5s was too short — 2s is reliable.
+                        task.wait(2)
+
+                        -- Load main GUI with retry safety
+                        local ok, err = pcall(onSuccess, LocalPlayer.Name)
+                        if not ok then
+                            logError("LoadMainScript failed on first attempt: " .. tostring(err))
+                            warn("[ExecSync] Retrying main GUI load…")
+                            task.wait(1)
+                            local ok2, err2 = pcall(onSuccess, LocalPlayer.Name)
+                            if not ok2 then
+                                logError("LoadMainScript retry also failed: " .. tostring(err2))
+                                warn("[ExecSync] FATAL: could not load main GUI — " .. tostring(err2))
+                            end
+                        end
                     end)
                 end
             end)
