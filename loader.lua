@@ -507,8 +507,9 @@ end
 
 -- ─────────────────────────────────────────────
 --  FIX: B&W THEME (replaces original applyExecSyncTheme)
---  Explicit palette for known Kiwisense keys, then
---  luminance-based fallback for any remaining keys.
+--  Only touches Color3 keys — Font, EnumItem, bool, and any
+--  other type the library stores in Theme are left completely
+--  alone so Kiwisense's built-in font is always preserved.
 -- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
     pcall(function()
@@ -521,7 +522,9 @@ local function applyExecSyncTheme(ML)
         local nearBlack = Color3.fromRGB(18,  18,  18)
         local black     = Color3.fromRGB(10,  10,  10)
 
-        -- Explicit mapping for known Kiwisense theme keys
+        -- Explicit Color3 mapping for known Kiwisense theme keys.
+        -- Font / EnumItem / boolean keys are intentionally NOT listed here
+        -- so the library's built-in font and enums are never touched.
         local BW = {
             Background             = black,
             SecondBackground       = nearBlack,
@@ -543,7 +546,7 @@ local function applyExecSyncTheme(ML)
             NotificationBorder     = white,
         }
 
-        -- Apply explicit keys first
+        -- Apply explicit Color3 keys first
         for key, color in pairs(BW) do
             if ML.Theme[key] ~= nil then
                 ML.Theme[key] = color
@@ -551,17 +554,20 @@ local function applyExecSyncTheme(ML)
             end
         end
 
-        -- Fallback: any remaining theme key → B&W by luminance
-        for key, color in pairs(ML.Theme) do
-            if typeof(color) ~= "Color3" then continue end
-            if BW[key] then continue end
-            local _, s, v = Color3.toHSV(color)
+        -- Fallback: any remaining theme key that is STRICTLY a Color3
+        -- gets mapped to B&W by luminance.
+        -- Font, EnumItem, string, boolean, number values are all skipped
+        -- automatically because typeof(value) ~= "Color3".
+        for key, value in pairs(ML.Theme) do
+            if typeof(value) ~= "Color3" then continue end  -- skip Font/EnumItem/etc.
+            if BW[key] then continue end                     -- already handled above
+            local _, s, v = Color3.toHSV(value)
             local mapped = (s > 0.15 or v > 0.55) and white or black
             ML.Theme[key] = mapped
             pcall(function() ML:ChangeTheme(key, mapped) end)
         end
 
-        logInfo("B&W theme applied")
+        logInfo("B&W theme applied — library font preserved")
     end)
 end
 
