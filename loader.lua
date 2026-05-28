@@ -76,7 +76,6 @@ end
 --  REMOTE LOGGER
 -- ─────────────────────────────────────────────
 local function remoteLog(level, message)
-    
     task.spawn(function()
         pcall(function()
             httpRequest({
@@ -117,10 +116,6 @@ end
 
 -- ─────────────────────────────────────────────
 --  PRESENCE TRACKING
---  Writes/updates a document in the `userPresence`
---  collection, keyed by Roblox username.
---  Dashboard can query this collection to show
---  each user's live status, game, and server.
 -- ─────────────────────────────────────────────
 local presenceDocUrl = FIRESTORE_BASE .. "/userPresence/" .. LocalPlayer.Name
 
@@ -135,7 +130,6 @@ local function updatePresence(online)
                 jobId        = { stringValue  = tostring(game.JobId) },
             }
 
-            -- Only include live game info when online
             if online then
                 fields.gameUrl = { stringValue =
                     "https://www.roblox.com/games/" .. tostring(game.PlaceId) }
@@ -145,7 +139,6 @@ local function updatePresence(online)
             end
 
             httpRequest({
-                -- PATCH with document name as key = upsert (create or overwrite)
                 Url    = presenceDocUrl
                     .. "?updateMask.fieldPaths=username"
                     .. "&updateMask.fieldPaths=online"
@@ -162,17 +155,42 @@ local function updatePresence(online)
     end)
 end
 
--- Called once on successful auth / session resume
 local function goOnline()
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
+
+    -- ── FIX: Heartbeat — keeps lastUpdated fresh every 60s.
+    -- If goOffline is missed (crash/force-close), the dashboard
+    -- should treat lastUpdated older than ~90s as offline.
+    task.spawn(function()
+        while true do
+            task.wait(60)
+            -- Stop the loop if the player has left
+            if not LocalPlayer or not LocalPlayer:IsDescendantOf(game) then break end
+            pcall(function()
+                httpRequest({
+                    Url    = presenceDocUrl
+                        .. "?updateMask.fieldPaths=lastUpdated"
+                        .. "&updateMask.fieldPaths=online",
+                    Method  = "PATCH",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body    = HttpService:JSONEncode({
+                        fields = {
+                            online      = { booleanValue = true },
+                            lastUpdated = { integerValue = tostring(os.time()) },
+                        }
+                    }),
+                })
+            end)
+        end
+    end)
 end
 
--- Called on Eject, Log Out, or game close
+local offlineSent = false  -- ── FIX: guard so goOffline only fires once
 local function goOffline()
+    if offlineSent then return end
+    offlineSent = true
     logInfo("Presence → OFFLINE")
-    -- Use a blocking pcall here so the request fires before the
-    -- game process is killed (game:BindToClose gives ~5 seconds)
     pcall(function()
         httpRequest({
             Url    = presenceDocUrl
@@ -190,7 +208,14 @@ local function goOffline()
     end)
 end
 
--- Fires when the Roblox client closes or the player leaves the game
+-- ── FIX: BindToClose fires ~5s before the process is killed,
+-- giving the blocking HTTP call above time to complete.
+-- This is the most reliable hook for abrupt game-close / executor detach.
+pcall(function()
+    game:BindToClose(goOffline)
+end)
+
+-- Fallback: fires when LocalPlayer is removed from the DataModel
 LocalPlayer.AncestryChanged:Connect(function()
     if not LocalPlayer:IsDescendantOf(game) then
         goOffline()
@@ -413,8 +438,6 @@ end
 local function LoadMainScript(username)
     local LoadingTick = os.clock()
 
-
-
     local ML = loadstring(game:HttpGet(
         "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
     ))()
@@ -540,7 +563,6 @@ local function LoadMainScript(username)
 
         Session:Label("Driving Empire", "Center")
         Session:Label(tostring(username or LocalPlayer.Name), "Center")
-        -- Show game ID in the session panel so the user can see it
         Session:Label("Place ID: " .. tostring(game.PlaceId), "Center")
 
         Session:Button({ Name = "Rejoin", Callback = function()
@@ -699,7 +721,6 @@ local function LoadMainScript(username)
         end })
     end
 
-    -- Init BEFORE notification so ML.Tween exists
     ML:Init()
     goOnline()
     ML:Notification({
@@ -838,7 +859,7 @@ local function BuildKeySystem(onSuccess)
         Name = "Join Discord",
         Callback = function()
             if setclipboard then setclipboard(DISCORD_INVITE) end
-            notify("ExecSync", "Discord invite link copied!", 3)
+            notify("ExecSync", "Discord invite copied!", 3)
         end
     })
 
