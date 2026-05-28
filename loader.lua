@@ -191,8 +191,10 @@ local function goOffline()
 end
 
 -- Fires when the Roblox client closes or the player leaves the game
-game:BindToClose(function()
-    goOffline()
+LocalPlayer.AncestryChanged:Connect(function()
+    if not LocalPlayer:IsDescendantOf(game) then
+        goOffline()
+    end
 end)
 
 -- ─────────────────────────────────────────────
