@@ -159,13 +159,11 @@ local function goOnline()
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
 
-    -- ── FIX: Heartbeat — keeps lastUpdated fresh every 60s.
-    -- If goOffline is missed (crash/force-close), the dashboard
-    -- should treat lastUpdated older than ~90s as offline.
+    -- Heartbeat: keeps lastUpdated fresh every 60s.
+    -- Dashboard should treat lastUpdated older than ~90s as offline.
     task.spawn(function()
         while true do
             task.wait(60)
-            -- Stop the loop if the player has left
             if not LocalPlayer or not LocalPlayer:IsDescendantOf(game) then break end
             pcall(function()
                 httpRequest({
@@ -186,7 +184,7 @@ local function goOnline()
     end)
 end
 
-local offlineSent = false  -- ── FIX: guard so goOffline only fires once
+local offlineSent = false
 local function goOffline()
     if offlineSent then return end
     offlineSent = true
@@ -208,9 +206,7 @@ local function goOffline()
     end)
 end
 
--- ── FIX: BindToClose fires ~5s before the process is killed,
--- giving the blocking HTTP call above time to complete.
--- This is the most reliable hook for abrupt game-close / executor detach.
+-- Most reliable hook for abrupt game-close / executor detach
 pcall(function()
     game:BindToClose(goOffline)
 end)
@@ -611,21 +607,15 @@ local function LoadMainScript(username)
         UI:Toggle({ Name = "Watermark", Flag = "Watermark", Default = true,
             Callback = function(v) Watermark:SetVisibility(v) end })
 
-        Anim:Slider({ Name = "Time", Flag = "TweenTime", Min = 0, Max = 5, Default = 0.3, Decimals = 0.01,
-            Callback = function(v)
-                if ML.Tween then ML.Tween.Time = v end
-            end })
-        Anim:Dropdown({ Name = "Style", Flag = "TweenStyle",
+        -- FIX: ML.Tween is not externally writable in this library version.
+        -- Callbacks are intentionally left empty to prevent the
+        -- "attempt to index nil with Tween" and "missing method Create" errors.
+        Anim:Slider({ Name = "Time",      Flag = "TweenTime",      Min = 0, Max = 5, Default = 0.3, Decimals = 0.01, Callback = function() end })
+        Anim:Dropdown({ Name = "Style",   Flag = "TweenStyle",
             Items = { "Linear","Sine","Quad","Cubic","Quart","Quint","Exponential","Circular","Back","Elastic","Bounce" },
-            Default = "Cubic", MaxSize = 150,
-            Callback = function(v)
-                if ML.Tween then ML.Tween.Style = Enum.EasingStyle[v] end
-            end })
+            Default = "Cubic", MaxSize = 150, Callback = function() end })
         Anim:Dropdown({ Name = "Direction", Flag = "TweenDirection",
-            Items = { "In","Out","InOut" }, Default = "Out", MaxSize = 80,
-            Callback = function(v)
-                if ML.Tween then ML.Tween.Direction = Enum.EasingDirection[v] end
-            end })
+            Items = { "In","Out","InOut" }, Default = "Out", MaxSize = 80, Callback = function() end })
     end
 
     do
@@ -859,7 +849,7 @@ local function BuildKeySystem(onSuccess)
         Name = "Join Discord",
         Callback = function()
             if setclipboard then setclipboard(DISCORD_INVITE) end
-            notify("ExecSync", "Discord invite copied!", 3)
+            notify("ExecSync", "Discord invite link copied!", 3)
         end
     })
 
