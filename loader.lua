@@ -1,7 +1,19 @@
 -- ╔══════════════════════════════════════════════════════╗
--- ║         ExecSync  v1.4.1  (Auth Fix)                 ║
--- ║   IceWare Key System  +  Kiwisense Main GUI          ║
+-- ║         ExecSync  v1.4.1                             ║
+-- ║   ExecSync Key System  +  Kiwisense Main GUI         ║
 -- ╚══════════════════════════════════════════════════════╝
+
+-- ─────────────────────────────────────────────
+--  EXECUTOR COMPATIBILITY SHIMS
+--  MUST be set before any library is loaded.
+--  Root cause of "attempt to index nil with Tween":
+--  Kiwisense calls cloneref(TweenService) at load time.
+--  On non-Synapse executors cloneref is nil → TweenService = nil.
+-- ─────────────────────────────────────────────
+if not cloneref   then cloneref   = function(x) return x end end
+if not getgenv    then getgenv    = function()   return _G  end end
+if not gethui     then gethui     = function()   return game:GetService("CoreGui") end end
+if not getcustomasset then getcustomasset = function(p) return "rbxasset://"..p end end
 
 local Players          = game:GetService("Players")
 local HttpService      = game:GetService("HttpService")
@@ -129,17 +141,12 @@ local function updatePresence(online)
                 placeId      = { stringValue  = tostring(game.PlaceId) },
                 jobId        = { stringValue  = tostring(game.JobId) },
             }
-
             if online then
-                fields.gameUrl = { stringValue =
-                    "https://www.roblox.com/games/" .. tostring(game.PlaceId) }
-                fields.serverLink = { stringValue =
-                    "roblox://experiences/start?placeId=" .. tostring(game.PlaceId)
-                    .. "&gameInstanceId=" .. tostring(game.JobId) }
+                fields.gameUrl    = { stringValue = "https://www.roblox.com/games/" .. tostring(game.PlaceId) }
+                fields.serverLink = { stringValue = "roblox://experiences/start?placeId=" .. tostring(game.PlaceId) .. "&gameInstanceId=" .. tostring(game.JobId) }
             end
-
             httpRequest({
-                Url    = presenceDocUrl
+                Url     = presenceDocUrl
                     .. "?updateMask.fieldPaths=username"
                     .. "&updateMask.fieldPaths=online"
                     .. "&updateMask.fieldPaths=lastUpdated"
@@ -158,16 +165,14 @@ end
 local function goOnline()
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
-
-    -- Heartbeat: keeps lastUpdated fresh every 60s.
-    -- Dashboard should treat lastUpdated older than ~90s as offline.
+    -- Heartbeat every 60s; dashboard treats lastUpdated > 90s old as offline
     task.spawn(function()
         while true do
             task.wait(60)
             if not LocalPlayer or not LocalPlayer:IsDescendantOf(game) then break end
             pcall(function()
                 httpRequest({
-                    Url    = presenceDocUrl
+                    Url     = presenceDocUrl
                         .. "?updateMask.fieldPaths=lastUpdated"
                         .. "&updateMask.fieldPaths=online",
                     Method  = "PATCH",
@@ -191,7 +196,7 @@ local function goOffline()
     logInfo("Presence → OFFLINE")
     pcall(function()
         httpRequest({
-            Url    = presenceDocUrl
+            Url     = presenceDocUrl
                 .. "?updateMask.fieldPaths=online"
                 .. "&updateMask.fieldPaths=lastUpdated",
             Method  = "PATCH",
@@ -206,16 +211,9 @@ local function goOffline()
     end)
 end
 
--- Most reliable hook for abrupt game-close / executor detach
-pcall(function()
-    game:BindToClose(goOffline)
-end)
-
--- Fallback: fires when LocalPlayer is removed from the DataModel
+pcall(function() game:BindToClose(goOffline) end)
 LocalPlayer.AncestryChanged:Connect(function()
-    if not LocalPlayer:IsDescendantOf(game) then
-        goOffline()
-    end
+    if not LocalPlayer:IsDescendantOf(game) then goOffline() end
 end)
 
 -- ─────────────────────────────────────────────
@@ -223,7 +221,6 @@ end)
 -- ─────────────────────────────────────────────
 local function queryByCode(username, code)
     logInfo("queryByCode → " .. username)
-
     local body = HttpService:JSONEncode({
         structuredQuery = {
             from  = {{ collectionId = "verificationCodes" }},
@@ -231,60 +228,24 @@ local function queryByCode(username, code)
                 compositeFilter = {
                     op = "AND",
                     filters = {
-                        {
-                            fieldFilter = {
-                                field = { fieldPath = "username" },
-                                op    = "EQUAL",
-                                value = { stringValue = username },
-                            }
-                        },
-                        {
-                            fieldFilter = {
-                                field = { fieldPath = "code" },
-                                op    = "EQUAL",
-                                value = { stringValue = tostring(code) },
-                            }
-                        },
+                        { fieldFilter = { field = { fieldPath = "username" }, op = "EQUAL", value = { stringValue = username } } },
+                        { fieldFilter = { field = { fieldPath = "code"     }, op = "EQUAL", value = { stringValue = tostring(code) } } },
                     }
                 }
             },
             limit = 1,
         }
     })
-
     local ok, res = pcall(function()
-        return httpRequest({
-            Url     = QUERY_URL,
-            Method  = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body    = body,
-        })
+        return httpRequest({ Url = QUERY_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
     end)
-
-    if not ok then
-        local msg = "Network error — check HttpService is enabled."
-        logError("queryByCode: " .. tostring(res))
-        return nil, msg
-    end
-
-    if res.StatusCode ~= 200 then
-        local msg = "Firestore error (" .. tostring(res.StatusCode) .. ")."
-        logError("queryByCode HTTP " .. tostring(res.StatusCode) .. " body=" .. tostring(res.Body))
-        return nil, msg
-    end
-
-    local parsed
-    ok, parsed = pcall(HttpService.JSONDecode, HttpService, res.Body)
-    if not ok then
-        logError("queryByCode: JSON decode failed — " .. tostring(parsed))
-        return nil, "Invalid server response."
-    end
-
+    if not ok then logError("queryByCode: " .. tostring(res)); return nil, "Network error — check HttpService is enabled." end
+    if res.StatusCode ~= 200 then logError("queryByCode HTTP " .. tostring(res.StatusCode)); return nil, "Firestore error (" .. tostring(res.StatusCode) .. ")." end
+    local parsed; ok, parsed = pcall(HttpService.JSONDecode, HttpService, res.Body)
+    if not ok then logError("queryByCode: JSON decode failed"); return nil, "Invalid server response." end
     if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
-        logWarn("queryByCode: no document matched")
-        return nil, "Code not found. Double-check your username and code."
+        logWarn("queryByCode: no document matched"); return nil, "Code not found. Double-check your username and code."
     end
-
     logInfo("queryByCode: match → " .. tostring(parsed[1].document.name))
     return parsed[1].document.name, nil
 end
@@ -292,72 +253,33 @@ end
 local function writeTokenToDoc(docName, token)
     local patchUrl = "https://firestore.googleapis.com/v1/" .. docName
         .. "?updateMask.fieldPaths=used&updateMask.fieldPaths=sessionToken"
-
     local ok, res = pcall(function()
         return httpRequest({
-            Url     = patchUrl,
-            Method  = "PATCH",
+            Url     = patchUrl, Method = "PATCH",
             Headers = { ["Content-Type"] = "application/json" },
-            Body    = HttpService:JSONEncode({
-                fields = {
-                    used         = { booleanValue = true },
-                    sessionToken = { stringValue  = token },
-                }
-            }),
+            Body    = HttpService:JSONEncode({ fields = { used = { booleanValue = true }, sessionToken = { stringValue = token } } }),
         })
     end)
-
-    if not ok then
-        logError("writeTokenToDoc network error: " .. tostring(res))
-        return false, "Network error when saving session."
-    end
-
-    if res.StatusCode ~= 200 then
-        logError("writeTokenToDoc HTTP " .. tostring(res.StatusCode))
-        return false, "Could not save session (HTTP " .. tostring(res.StatusCode) .. ")."
-    end
-
-    logInfo("writeTokenToDoc: OK")
-    return true, nil
+    if not ok then logError("writeTokenToDoc network error: " .. tostring(res)); return false, "Network error when saving session." end
+    if res.StatusCode ~= 200 then logError("writeTokenToDoc HTTP " .. tostring(res.StatusCode)); return false, "Could not save session." end
+    logInfo("writeTokenToDoc: OK"); return true, nil
 end
 
 local function queryByToken(token)
     logInfo("queryByToken: " .. token:sub(1, 8) .. "…")
-
     local body = HttpService:JSONEncode({
         structuredQuery = {
             from  = {{ collectionId = "verificationCodes" }},
-            where = {
-                fieldFilter = {
-                    field = { fieldPath = "sessionToken" },
-                    op    = "EQUAL",
-                    value = { stringValue = token },
-                }
-            },
+            where = { fieldFilter = { field = { fieldPath = "sessionToken" }, op = "EQUAL", value = { stringValue = token } } },
             limit = 1,
         }
     })
-
     local ok, res = pcall(function()
-        return httpRequest({
-            Url     = QUERY_URL,
-            Method  = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body    = body,
-        })
+        return httpRequest({ Url = QUERY_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
     end)
-
-    if not ok or res.StatusCode ~= 200 then
-        logError("queryByToken failed: " .. tostring(ok and res.StatusCode or res))
-        return nil
-    end
-
+    if not ok or res.StatusCode ~= 200 then logError("queryByToken failed"); return nil end
     local parsed = HttpService:JSONDecode(res.Body)
-    if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then
-        logWarn("queryByToken: token not found")
-        return nil
-    end
-
+    if type(parsed) ~= "table" or not parsed[1] or not parsed[1].document then logWarn("queryByToken: not found"); return nil end
     local fields = parsed[1].document.fields
     if fields and fields.username and fields.username.stringValue then
         logInfo("queryByToken → " .. fields.username.stringValue)
@@ -368,15 +290,148 @@ end
 
 local function fetchRemoteSettings()
     local ok, res = pcall(function()
-        return httpRequest({
-            Url     = FIRESTORE_BASE .. "/settings/global",
-            Method  = "GET",
-            Headers = { ["Content-Type"] = "application/json" },
-        })
+        return httpRequest({ Url = FIRESTORE_BASE .. "/settings/global", Method = "GET", Headers = { ["Content-Type"] = "application/json" } })
     end)
     if not ok or res.StatusCode ~= 200 then return nil end
     local parsed = HttpService:JSONDecode(res.Body)
     return parsed and parsed.fields or nil
+end
+
+-- ─────────────────────────────────────────────
+--  USER SETTINGS  (Firestore ↔ GUI sync)
+--
+--  STUDIO SUPPORT INSTRUCTIONS:
+--  ─────────────────────────────
+--  Collection : userSettings
+--  Document ID: {Roblox username}  (e.g. "PlayerName123")
+--  Fields     : Use the exact Flag names below as field names.
+--               Booleans  → booleanValue  (toggles)
+--               Numbers   → doubleValue   (sliders)
+--               Strings   → stringValue   (dropdowns / textboxes)
+--
+--  GUI Flag reference with types, defaults, min/max:
+--  ┌─────────────────────┬─────────┬─────────┬─────┬──────┐
+--  │ Flag                │ Type    │ Default │ Min │  Max │
+--  ├─────────────────────┼─────────┼─────────┼─────┼──────┤
+--  │ AutoRace            │ bool    │ false   │  —  │   —  │
+--  │ StartSolo           │ bool    │ false   │  —  │   —  │
+--  │ RaceSpeed           │ number  │ 250     │   1 │  500 │
+--  │ MinWaitTime         │ number  │ 0.5     │   0 │   10 │
+--  │ AutoVaryWait        │ bool    │ false   │  —  │   —  │
+--  │ SelectRace          │ string  │ "Circuit Race"      │
+--  │ AutoRob             │ bool    │ false   │  —  │   —  │
+--  │ IncludeCargoCrates  │ bool    │ false   │  —  │   —  │
+--  │ AntiCop             │ bool    │ false   │  —  │   —  │
+--  │ IncludeBankHeist    │ bool    │ false   │  —  │   —  │
+--  │ AutoDeposit         │ bool    │ false   │  —  │   —  │
+--  │ DepositThreshold    │ number  │ 10      │   1 │  100 │
+--  │ PauseBagThreshold   │ number  │ 25      │   1 │  100 │
+--  │ TopSpeedEnabled     │ bool    │ false   │  —  │   —  │
+--  │ TopSpeed            │ number  │ 300     │   1 │  600 │
+--  │ NitrousEnabled      │ bool    │ false   │  —  │   —  │
+--  │ NitrousScale        │ number  │ 2       │ 0.1 │   10 │
+--  │ AccelerationEnabled │ bool    │ false   │  —  │   —  │
+--  │ AccelerationScale   │ number  │ 2       │ 0.1 │   10 │
+--  │ TractionEnabled     │ bool    │ false   │  —  │   —  │
+--  │ TractionScale       │ number  │ 2       │ 0.1 │   10 │
+--  │ HornBoost           │ bool    │ false   │  —  │   —  │
+--  │ HornBoostIntensity  │ number  │ 1       │   1 │   10 │
+--  │ InstantStop         │ bool    │ false   │  —  │   —  │
+--  │ InfiniteNitro       │ bool    │ false   │  —  │   —  │
+--  │ DisableRendering    │ bool    │ false   │  —  │   —  │
+--  │ WebhookAlerts       │ bool    │ false   │  —  │   —  │
+--  │ WebhookURL          │ string  │ ""      │  —  │   —  │
+--  │ WebhookPing         │ bool    │ false   │  —  │   —  │
+--  └─────────────────────┴─────────┴─────────┴─────┴──────┘
+--
+--  Dashboard can write any of these fields to remotely configure
+--  a user's settings. The script reads them on load and re-syncs
+--  every 5 minutes via startSettingsPoll.
+-- ─────────────────────────────────────────────
+local USER_FLAGS_TO_SYNC = {
+    "AutoRace", "StartSolo", "RaceSpeed", "MinWaitTime", "AutoVaryWait", "SelectRace",
+    "AutoRob", "IncludeCargoCrates", "AntiCop", "IncludeBankHeist",
+    "AutoDeposit", "DepositThreshold", "PauseBagThreshold",
+    "TopSpeedEnabled", "TopSpeed", "NitrousEnabled", "NitrousScale",
+    "AccelerationEnabled", "AccelerationScale", "TractionEnabled", "TractionScale",
+    "HornBoost", "HornBoostIntensity", "InstantStop", "InfiniteNitro",
+    "DisableRendering", "WebhookAlerts", "WebhookURL", "WebhookPing",
+}
+
+local function fetchUserSettings(username)
+    logInfo("fetchUserSettings → " .. username)
+    local ok, res = pcall(function()
+        return httpRequest({
+            Url     = FIRESTORE_BASE .. "/userSettings/" .. username,
+            Method  = "GET",
+            Headers = { ["Content-Type"] = "application/json" },
+        })
+    end)
+    if not ok or res.StatusCode ~= 200 then
+        logWarn("fetchUserSettings: not found or error (" .. tostring(ok and res.StatusCode or res) .. ")")
+        return nil
+    end
+    local parsed = HttpService:JSONDecode(res.Body)
+    return parsed and parsed.fields or nil
+end
+
+local function applyUserSettings(ML, fields)
+    if not fields or not ML.Flags then return end
+    local applied = 0
+    for flagName, fieldVal in pairs(fields) do
+        local flag = ML.Flags[flagName]
+        if flag then
+            local val
+            if fieldVal.booleanValue ~= nil then
+                val = fieldVal.booleanValue
+            elseif fieldVal.doubleValue ~= nil then
+                val = fieldVal.doubleValue
+            elseif fieldVal.integerValue ~= nil then
+                val = tonumber(fieldVal.integerValue)
+            elseif fieldVal.stringValue ~= nil then
+                val = fieldVal.stringValue
+            end
+            if val ~= nil then
+                pcall(function() flag:Set(val) end)
+                applied = applied + 1
+            end
+        end
+    end
+    logInfo("applyUserSettings: applied " .. applied .. " flags")
+    return applied
+end
+
+local function saveUserSettings(username, ML)
+    if not ML.Flags then return end
+    local fields = {}
+    for _, flagName in ipairs(USER_FLAGS_TO_SYNC) do
+        local flag = ML.Flags[flagName]
+        if flag then
+            local val = flag.Value
+            if type(val) == "boolean" then
+                fields[flagName] = { booleanValue = val }
+            elseif type(val) == "number" then
+                fields[flagName] = { doubleValue = val }
+            elseif type(val) == "string" and val ~= "" then
+                fields[flagName] = { stringValue = val }
+            end
+        end
+    end
+    -- Build updateMask
+    local mask = ""
+    for _, flagName in ipairs(USER_FLAGS_TO_SYNC) do
+        mask = mask .. "&updateMask.fieldPaths=" .. flagName
+    end
+    logInfo("saveUserSettings → " .. username)
+    pcall(function()
+        httpRequest({
+            Url     = FIRESTORE_BASE .. "/userSettings/" .. username .. "?" .. mask:sub(2),
+            Method  = "PATCH",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body    = HttpService:JSONEncode({ fields = fields }),
+        })
+    end)
+    notify("ExecSync", "Settings synced to cloud ✓", 3)
 end
 
 -- ─────────────────────────────────────────────
@@ -405,26 +460,54 @@ end
 -- ─────────────────────────────────────────────
 --  SETTINGS POLL
 -- ─────────────────────────────────────────────
-local function startSettingsPoll(ML)
+local function startSettingsPoll(ML, username)
     task.spawn(function()
         while true do
             task.wait(300)
+            -- Re-fetch remote kill switch / maintenance
             local s = fetchRemoteSettings()
             if s then
                 if s.killSwitch and s.killSwitch.booleanValue == true then
                     logWarn("Kill switch activated")
                     notify("ExecSync", "Script disabled remotely.", 6)
-                    task.wait(3)
-                    goOffline()
-                    ML:Unload()
-                    return
+                    task.wait(3); goOffline(); ML:Unload(); return
                 end
                 if s.maintenanceMessage and s.maintenanceMessage.stringValue ~= "" then
                     notify("ExecSync – Notice", s.maintenanceMessage.stringValue, 8)
                 end
-                logInfo("Settings refreshed")
+            end
+            -- Re-fetch and re-apply user settings from Studio
+            local userFields = fetchUserSettings(username)
+            if userFields then
+                local n = applyUserSettings(ML, userFields)
+                if n and n > 0 then
+                    logInfo("Settings re-synced: " .. n .. " flags updated")
+                end
             end
         end
+    end)
+end
+
+-- ─────────────────────────────────────────────
+--  THEME HELPER  (blues → white, grays → black)
+-- ─────────────────────────────────────────────
+local function applyExecSyncTheme(ML)
+    pcall(function()
+        if not ML.Theme then return end
+        for key, color in pairs(ML.Theme) do
+            if typeof(color) ~= "Color3" then continue end
+            local h, s, v = Color3.toHSV(color)
+            -- Blue/cyan range (hue 0.55–0.72, sat > 40%) → white
+            if s > 0.4 and h >= 0.55 and h <= 0.72 then
+                ML.Theme[key] = Color3.fromRGB(255, 255, 255)
+                pcall(function() ML:ChangeTheme(key, Color3.fromRGB(255, 255, 255)) end)
+            -- Gray range (sat < 15%, val 10–70%) → near-black
+            elseif s < 0.15 and v > 0.1 and v < 0.72 then
+                ML.Theme[key] = Color3.fromRGB(12, 12, 12)
+                pcall(function() ML:ChangeTheme(key, Color3.fromRGB(12, 12, 12)) end)
+            end
+        end
+        logInfo("ExecSync theme applied")
     end)
 end
 
@@ -442,13 +525,13 @@ local function LoadMainScript(username)
     flushNotifQueue()
 
     local Window = ML:Window({
-        Name      = "IceWare",
+        Name      = "ExecSync",
         Version   = "v1.4.1",
         Logo      = "135215559087473",
         FadeSpeed = 0.25,
     })
 
-    local Watermark = ML:Watermark("IceWare | Driving Empire", "135215559087473")
+    local Watermark = ML:Watermark("ExecSync | Driving Empire", "135215559087473")
     Watermark:SetVisibility(true)
 
     local KeybindList = ML:KeybindsList()
@@ -506,11 +589,11 @@ local function LoadMainScript(username)
         Perf:Toggle({ Name = "Traction",      Flag = "TractionEnabled",     Default = false, Callback = function() end })
         Perf:Slider({ Name = "Scale",         Flag = "TractionScale",       Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
 
-        Extra:Toggle({ Name = "Horn Boost",          Flag = "HornBoost",          Default = false, Callback = function() end })
-        Extra:Slider({ Name = "Horn Boost Intensity", Flag = "HornBoostIntensity", Min = 1, Max = 10, Default = 1, Decimals = 1, Callback = function() end })
-        Extra:Toggle({ Name = "Instant Stop",         Flag = "InstantStop",        Default = false, Callback = function() end })
-        Extra:Toggle({ Name = "Car Breakable Aura",   Flag = "CarBreakableAura",   Default = false, Callback = function() end })
-        Extra:Toggle({ Name = "Infinite Nitro",       Flag = "InfiniteNitro",      Default = false, Callback = function() end })
+        Extra:Toggle({ Name = "Horn Boost",           Flag = "HornBoost",          Default = false, Callback = function() end })
+        Extra:Slider({ Name = "Horn Boost Intensity",  Flag = "HornBoostIntensity", Min = 1, Max = 10, Default = 1, Decimals = 1, Callback = function() end })
+        Extra:Toggle({ Name = "Instant Stop",          Flag = "InstantStop",        Default = false, Callback = function() end })
+        Extra:Toggle({ Name = "Car Breakable Aura",    Flag = "CarBreakableAura",   Default = false, Callback = function() end })
+        Extra:Toggle({ Name = "Infinite Nitro",        Flag = "InfiniteNitro",      Default = false, Callback = function() end })
     end
 
     -- ── Miscellaneous ─────────────────────────
@@ -523,23 +606,23 @@ local function LoadMainScript(username)
         local Misc      = Pages["Misc"]:Section({ Name = "Misc",         Side = 2 })
         local Webhook   = Pages["Misc"]:Section({ Name = "Webhook",      Side = 2 })
 
-        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",       Default = false, Callback = function() end })
-        Rewards:Toggle({ Name = "Auto Double Daily Rewards",   Flag = "AutoDoubleDailyRewards",  Default = false, Callback = function() end })
-        Rewards:Toggle({ Name = "Auto Claim AD Rewards",       Flag = "AutoADRewards",           Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",      Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Double Daily Rewards",   Flag = "AutoDoubleDailyRewards", Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Claim AD Rewards",       Flag = "AutoADRewards",          Default = false, Callback = function() end })
         Rewards:Button({ Name = "Redeem All Codes",            Callback = function() end })
         Rewards:Button({ Name = "Free Trophies (Nascar QUIZ)", Callback = function() end })
-        Trolling:Toggle({ Name = "Spam Outfits",               Flag = "SpamOutfits",             Default = false, Callback = function() end })
-        Inventory:Toggle({ Name = "Auto Open Packs [$$$]",    Flag = "AutoOpenPacks",           Default = false, Callback = function() end })
-        Inventory:Slider({ Name = "Gacha Open Amount",         Flag = "GachaOpenAmount",         Min = 1, Max = 100, Default = 1, Decimals = 1, Callback = function() end })
+        Trolling:Toggle({ Name = "Spam Outfits",               Flag = "SpamOutfits",            Default = false, Callback = function() end })
+        Inventory:Toggle({ Name = "Auto Open Packs [$$$]",    Flag = "AutoOpenPacks",          Default = false, Callback = function() end })
+        Inventory:Slider({ Name = "Gacha Open Amount",         Flag = "GachaOpenAmount",        Min = 1, Max = 100, Default = 1, Decimals = 1, Callback = function() end })
         Dealer:Dropdown({ Name = "Select Vehicle", Flag = "SelectVehicle",
             Items = { "Cars", "Motorcycles", "Trucks", "Sports Cars" }, Default = "Cars", MaxSize = 200, Callback = function() end })
         Dealer:Button({ Name = "Open Dealership", Callback = function() end })
-        Optim:Toggle({ Name = "Disable Rendering",             Flag = "DisableRendering",        Default = false, Callback = function() end })
-        Misc:Toggle({ Name = "No Telemetry",                   Flag = "NoTelemetry",             Default = false, Callback = function() end })
-        Misc:Toggle({ Name = "Always See Bounties [$$$]",      Flag = "AlwaysSeeBounties",       Default = false, Callback = function() end })
-        Webhook:Toggle({ Name = "Webhook Alerts",              Flag = "WebhookAlerts",           Default = false, Callback = function() end })
-        Webhook:Textbox({ Name = "Webhook URL",                Flag = "WebhookURL",              Default = "", Placeholder = "...", Callback = function() end })
-        Webhook:Toggle({ Name = "Ping on alert (@here)",       Flag = "WebhookPing",             Default = false, Callback = function() end })
+        Optim:Toggle({ Name = "Disable Rendering",    Flag = "DisableRendering",  Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "No Telemetry",           Flag = "NoTelemetry",       Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "Always See Bounties [$$$]", Flag = "AlwaysSeeBounties", Default = false, Callback = function() end })
+        Webhook:Toggle({ Name = "Webhook Alerts",      Flag = "WebhookAlerts",     Default = false, Callback = function() end })
+        Webhook:Textbox({ Name = "Webhook URL",        Flag = "WebhookURL",        Default = "", Placeholder = "...", Callback = function() end })
+        Webhook:Toggle({ Name = "Ping on alert (@here)", Flag = "WebhookPing",     Default = false, Callback = function() end })
     end
 
     -- ── Player List ───────────────────────────
@@ -575,15 +658,28 @@ local function LoadMainScript(username)
                 end
             end
         end })
+        -- Cloud settings sync buttons
+        Session:Button({ Name = "Pull Settings from Cloud", Callback = function()
+            notify("ExecSync", "Fetching settings…", 2)
+            task.spawn(function()
+                local fields = fetchUserSettings(username)
+                if fields then
+                    local n = applyUserSettings(ML, fields)
+                    notify("ExecSync", "Loaded " .. (n or 0) .. " settings from cloud ✓", 4)
+                else
+                    notify("ExecSync", "No cloud settings found.", 3)
+                end
+            end)
+        end })
+        Session:Button({ Name = "Push Settings to Cloud", Callback = function()
+            task.spawn(function() saveUserSettings(username, ML) end)
+        end })
         Session:Button({ Name = "Eject", Callback = function()
-            logInfo("Eject")
-            goOffline()
-            ML:Unload()
+            logInfo("Eject"); goOffline(); ML:Unload()
         end })
         Session:Button({ Name = "Log Out", Callback = function()
             logInfo("Log Out — clearing session")
-            deleteSessionFile()
-            goOffline()
+            deleteSessionFile(); goOffline()
             notify("ExecSync", "Logged out. Re-run the script to sign in again.", 4)
             task.wait(2); ML:Unload()
         end })
@@ -608,9 +704,8 @@ local function LoadMainScript(username)
             Callback = function(v) Watermark:SetVisibility(v) end })
 
         -- FIX: ML.Tween is not externally writable in this library version.
-        -- Callbacks are intentionally left empty to prevent the
-        -- "attempt to index nil with Tween" and "missing method Create" errors.
-        Anim:Slider({ Name = "Time",      Flag = "TweenTime",      Min = 0, Max = 5, Default = 0.3, Decimals = 0.01, Callback = function() end })
+        -- Empty callbacks prevent "attempt to index nil with Tween" errors.
+        Anim:Slider({ Name = "Time",      Flag = "TweenTime",      Min = 0, Max = 5,  Default = 0.3, Decimals = 0.01, Callback = function() end })
         Anim:Dropdown({ Name = "Style",   Flag = "TweenStyle",
             Items = { "Linear","Sine","Quad","Cubic","Quart","Quint","Exponential","Circular","Back","Elastic","Bounce" },
             Default = "Cubic", MaxSize = 150, Callback = function() end })
@@ -641,9 +736,7 @@ local function LoadMainScript(username)
         Profiles:Button({ Name = "Save", Callback = function()
             if ConfigSelected then ML:SaveConfig(ConfigSelected) end
         end })
-        Profiles:Button({ Name = "Refresh List", Callback = function()
-            ML:RefreshConfigsList(CfgDropdown)
-        end })
+        Profiles:Button({ Name = "Refresh List", Callback = function() ML:RefreshConfigsList(CfgDropdown) end })
         ML:RefreshConfigsList(CfgDropdown)
         Autoload:Button({ Name = "Set Selected As Autoload", Callback = function()
             if ConfigSelected then
@@ -712,7 +805,22 @@ local function LoadMainScript(username)
     end
 
     ML:Init()
+
+    -- Apply ExecSync theme AFTER Init so ChangeTheme can update live elements
+    task.defer(function() applyExecSyncTheme(ML) end)
+
     goOnline()
+
+    -- Load user's cloud settings after GUI is fully built
+    task.spawn(function()
+        local fields = fetchUserSettings(username)
+        if fields then
+            task.wait(0.5) -- small delay so all flags are registered
+            local n = applyUserSettings(ML, fields)
+            logInfo("Cloud settings applied on load: " .. (n or 0) .. " flags")
+        end
+    end)
+
     ML:Notification({
         Name        = "ExecSync",
         Description = "Loaded in: " .. string.format("%.4f", os.clock() - LoadingTick)
@@ -723,7 +831,7 @@ local function LoadMainScript(username)
         IconColor   = Color3.fromRGB(255, 255, 255),
     })
 
-    startSettingsPoll(ML)
+    startSettingsPoll(ML, username)
     logInfo("Main GUI loaded for " .. tostring(username))
 end
 
@@ -738,17 +846,13 @@ local function BuildKeySystem(onSuccess)
     ActiveLib = KW
 
     local Win = KW:Window({
-        Name      = "IceWare",
+        Name      = "ExecSync",
         Version   = "Key System",
         Logo      = "135215559087473",
         FadeSpeed = 0.25,
     })
 
-    local KeyPage = Win:Page({
-        Name    = "Key System",
-        Icon    = "116339777575852",
-        Columns = 2,
-    })
+    local KeyPage = Win:Page({ Name = "Key System", Icon = "116339777575852", Columns = 2 })
 
     local VerifSection = KeyPage:Section({ Name = "Key Verification", Side = 1 })
     VerifSection:Label("Enter your 5-digit code to unlock access", "Center")
@@ -757,86 +861,49 @@ local function BuildKeySystem(onSuccess)
     local isVerifying = false
 
     VerifSection:Textbox({
-        Name        = "Key Input",
-        Flag        = "KeyInput",
-        Default     = "",
-        Placeholder = "Enter your key here..",
-        Callback    = function(v) enteredCode = v end
+        Name = "Key Input", Flag = "KeyInput", Default = "", Placeholder = "Enter your key here..",
+        Callback = function(v) enteredCode = v end
     })
 
     VerifSection:Button({
         Name = "Check Key",
         Callback = function()
-            if isVerifying then
-                notify("ExecSync", "Already verifying, please wait…", 2)
-                return
-            end
-
+            if isVerifying then notify("ExecSync", "Already verifying, please wait…", 2); return end
             local code = (enteredCode or ""):match("^%s*(.-)%s*$")
-            if not code or code == "" then
-                notify("ExecSync – Key System", "Please enter your security code.", 3)
-                return
-            end
-            if not code:match("^%d%d%d%d%d$") then
-                notify("ExecSync – Key System", "Code must be exactly 5 digits.", 3)
-                return
-            end
-
+            if not code or code == "" then notify("ExecSync – Key System", "Please enter your security code.", 3); return end
+            if not code:match("^%d%d%d%d%d$") then notify("ExecSync – Key System", "Code must be exactly 5 digits.", 3); return end
             isVerifying = true
             notify("ExecSync – Key System", "Verifying code, please wait…", 4)
             logInfo("Check Key pressed by " .. LocalPlayer.Name)
-
             task.spawn(function()
                 local docName, queryErr = queryByCode(LocalPlayer.Name, code)
                 if not docName then
                     notify("ExecSync – Key System", "❌ " .. (queryErr or "Invalid code."), 5)
-                    logError("Key rejected: " .. tostring(queryErr))
-                    isVerifying = false
-                    return
+                    logError("Key rejected: " .. tostring(queryErr)); isVerifying = false; return
                 end
-
                 local token = generateToken()
                 local patched, patchErr = writeTokenToDoc(docName, token)
                 if not patched then
                     notify("ExecSync – Key System", "❌ " .. (patchErr or "Could not save session."), 5)
-                    logError("Token write failed: " .. tostring(patchErr))
-                    isVerifying = false
-                    return
+                    logError("Token write failed: " .. tostring(patchErr)); isVerifying = false; return
                 end
-
                 saveToken(token)
                 logInfo("Token saved for " .. LocalPlayer.Name)
                 notify("ExecSync – Key System", "✅ Verified! Loading ExecSync…", 3)
-                task.wait(1.5)
-
-                KW:Unload()
-                task.wait(2)
-                isVerifying = false
-
-                if onSuccess then
-                    task.spawn(function()
-                        onSuccess(LocalPlayer.Name)
-                    end)
-                end
+                task.wait(1.5); KW:Unload(); task.wait(2); isVerifying = false
+                if onSuccess then task.spawn(function() onSuccess(LocalPlayer.Name) end) end
             end)
         end
     })
 
-    VerifSection:Button({
-        Name = "Get Key (12H)",
-        Callback = function()
-            if setclipboard then setclipboard(DISCORD_INVITE) end
-            notify("ExecSync", "Join Discord to get a 12H key. Link copied!", 4)
-        end
-    })
-
-    VerifSection:Button({
-        Name = "Get Key (1D)",
-        Callback = function()
-            if setclipboard then setclipboard(DISCORD_INVITE) end
-            notify("ExecSync", "Join Discord to get a 1D key. Link copied!", 4)
-        end
-    })
+    VerifSection:Button({ Name = "Get Key (12H)", Callback = function()
+        if setclipboard then setclipboard(DISCORD_INVITE) end
+        notify("ExecSync", "Join Discord to get a 12H key. Link copied!", 4)
+    end })
+    VerifSection:Button({ Name = "Get Key (1D)", Callback = function()
+        if setclipboard then setclipboard(DISCORD_INVITE) end
+        notify("ExecSync", "Join Discord to get a 1D key. Link copied!", 4)
+    end })
 
     local InfoSection = KeyPage:Section({ Name = "Information", Side = 2 })
     InfoSection:Label("Codes are tied to your Roblox username.", "Center")
@@ -845,15 +912,13 @@ local function BuildKeySystem(onSuccess)
 
     local DiscordSection = KeyPage:Section({ Name = "Discord", Side = 2 })
     DiscordSection:Label("Need help or updates? Join our Discord server", "Left")
-    DiscordSection:Button({
-        Name = "Join Discord",
-        Callback = function()
-            if setclipboard then setclipboard(DISCORD_INVITE) end
-            notify("ExecSync", "Discord invite link copied!", 3)
-        end
-    })
+    DiscordSection:Button({ Name = "Join Discord", Callback = function()
+        if setclipboard then setclipboard(DISCORD_INVITE) end
+        notify("ExecSync", "Discord invite link copied!", 3)
+    end })
 
     KW:Init()
+    task.defer(function() applyExecSyncTheme(KW) end)
     logInfo("Key system displayed for " .. LocalPlayer.Name)
 end
 
@@ -869,15 +934,11 @@ task.spawn(function()
         local resolvedUser = queryByToken(savedToken)
         if resolvedUser then
             logInfo("Session valid → loading for " .. resolvedUser)
-            LoadMainScript(resolvedUser)
-            return
+            LoadMainScript(resolvedUser); return
         else
             logWarn("Saved token invalid — showing key system")
             deleteSessionFile()
         end
     end
-
-    BuildKeySystem(function(username)
-        LoadMainScript(username)
-    end)
+    BuildKeySystem(function(username) LoadMainScript(username) end)
 end)
