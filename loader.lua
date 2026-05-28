@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════╗
--- ║         ExecSync  v1.4.4  (FIXED)                    ║
+-- ║         ExecSync  v1.4.4  (IceWare Theme)            ║
 -- ║   ExecSync Key System  +  Kiwisense Main GUI         ║
 -- ╚══════════════════════════════════════════════════════╝
 
@@ -31,6 +31,59 @@ local FIRESTORE_BASE = "https://firestore.googleapis.com/v1/projects/"
 local QUERY_URL = FIRESTORE_BASE .. ":runQuery"
 
 -- ─────────────────────────────────────────────
+--  ICEWARE THEME PALETTE
+-- ─────────────────────────────────────────────
+local IW = {
+    -- Backgrounds
+    Background          = Color3.fromRGB(10,  10,  10),   -- #0a0a0a  (window bg)
+    SecondaryBG         = Color3.fromRGB(15,  15,  15),   -- #0f0f0f
+    ElementBG           = Color3.fromRGB(20,  20,  20),   -- #141414  (buttons / inputs)
+    HoverBG             = Color3.fromRGB(28,  28,  28),   -- #1c1c1c
+    SectionBG           = Color3.fromRGB(13,  13,  13),   -- #0d0d0d
+
+    -- Borders
+    Border              = Color3.fromRGB(35,  35,  35),   -- #232323
+    BorderLight         = Color3.fromRGB(50,  50,  50),   -- #323232
+
+    -- Text
+    Text                = Color3.fromRGB(255, 255, 255),  -- pure white
+    SubText             = Color3.fromRGB(180, 180, 180),  -- #b4b4b4
+    DimText             = Color3.fromRGB(90,  90,  90),   -- #5a5a5a
+    PlaceholderText     = Color3.fromRGB(65,  65,  65),   -- #414141
+
+    -- Accent (IceWare uses white as accent — no color tint)
+    Accent              = Color3.fromRGB(255, 255, 255),
+    AccentDim           = Color3.fromRGB(200, 200, 200),
+
+    -- Toggle / Slider
+    ToggleOn            = Color3.fromRGB(255, 255, 255),
+    ToggleOff           = Color3.fromRGB(35,  35,  35),
+    Thumb               = Color3.fromRGB(255, 255, 255),
+    DisabledThumb       = Color3.fromRGB(45,  45,  45),
+    SliderFill          = Color3.fromRGB(255, 255, 255),
+    SliderTrack         = Color3.fromRGB(30,  30,  30),
+
+    -- Notification
+    NotifBG             = Color3.fromRGB(14,  14,  14),
+    NotifBorder         = Color3.fromRGB(255, 255, 255),
+
+    -- Dropdown
+    DropdownBG          = Color3.fromRGB(12,  12,  12),
+    DropdownItem        = Color3.fromRGB(18,  18,  18),
+    DropdownSelected    = Color3.fromRGB(28,  28,  28),
+
+    -- Scrollbar
+    ScrollBar           = Color3.fromRGB(40,  40,  40),
+    ScrollBarHover      = Color3.fromRGB(70,  70,  70),
+
+    -- Font — GothamBold matches IceWare's clean sans-serif header,
+    --        GothamSemibold for body/labels
+    FontTitle           = Enum.Font.GothamBold,
+    FontBody            = Enum.Font.GothamSemibold,
+    FontMono            = Enum.Font.Code,
+}
+
+-- ─────────────────────────────────────────────
 --  UNIVERSAL HTTP WRAPPER
 -- ─────────────────────────────────────────────
 local function httpRequest(opts)
@@ -59,7 +112,7 @@ local function notify(title, body, duration)
             Description = body,
             Duration    = duration,
             Icon        = "116339777575852",
-            IconColor   = Color3.fromRGB(255, 255, 255),
+            IconColor   = IW.Text,
         })
     else
         table.insert(NotifQueue, { title, body, duration })
@@ -74,7 +127,7 @@ local function flushNotifQueue()
             Description = n[2],
             Duration    = n[3],
             Icon        = "116339777575852",
-            IconColor   = Color3.fromRGB(255, 255, 255),
+            IconColor   = IW.Text,
         })
     end
     NotifQueue = {}
@@ -139,17 +192,17 @@ local function updatePresence(online)
             }
             if online then
                 fields.gameUrl    = { stringValue = "https://www.roblox.com/games/" .. tostring(game.PlaceId) }
-                fields.serverLink = { stringValue = "roblox://experiences/start?placeId=" .. tostring(game.PlaceId) .. "&amp;gameInstanceId=" .. tostring(game.JobId) }
+                fields.serverLink = { stringValue = "roblox://experiences/start?placeId=" .. tostring(game.PlaceId) .. "&gameInstanceId=" .. tostring(game.JobId) }
             end
             httpRequest({
                 Url     = presenceDocUrl
                     .. "?updateMask.fieldPaths=username"
-                    .. "&amp;updateMask.fieldPaths=online"
-                    .. "&amp;updateMask.fieldPaths=lastUpdated"
-                    .. "&amp;updateMask.fieldPaths=placeId"
-                    .. "&amp;updateMask.fieldPaths=jobId"
-                    .. "&amp;updateMask.fieldPaths=gameUrl"
-                    .. "&amp;updateMask.fieldPaths=serverLink",
+                    .. "&updateMask.fieldPaths=online"
+                    .. "&updateMask.fieldPaths=lastUpdated"
+                    .. "&updateMask.fieldPaths=placeId"
+                    .. "&updateMask.fieldPaths=jobId"
+                    .. "&updateMask.fieldPaths=gameUrl"
+                    .. "&updateMask.fieldPaths=serverLink",
                 Method  = "PATCH",
                 Headers = { ["Content-Type"] = "application/json" },
                 Body    = HttpService:JSONEncode({ fields = fields }),
@@ -169,7 +222,7 @@ local function goOnline()
                 httpRequest({
                     Url     = presenceDocUrl
                         .. "?updateMask.fieldPaths=lastUpdated"
-                        .. "&amp;updateMask.fieldPaths=online",
+                        .. "&updateMask.fieldPaths=online",
                     Method  = "PATCH",
                     Headers = { ["Content-Type"] = "application/json" },
                     Body    = HttpService:JSONEncode({
@@ -193,7 +246,7 @@ local function goOffline()
         httpRequest({
             Url     = presenceDocUrl
                 .. "?updateMask.fieldPaths=online"
-                .. "&amp;updateMask.fieldPaths=lastUpdated",
+                .. "&updateMask.fieldPaths=lastUpdated",
             Method  = "PATCH",
             Headers = { ["Content-Type"] = "application/json" },
             Body    = HttpService:JSONEncode({
@@ -247,7 +300,7 @@ end
 
 local function writeTokenToDoc(docName, token)
     local patchUrl = "https://firestore.googleapis.com/v1/" .. docName
-        .. "?updateMask.fieldPaths=used&amp;updateMask.fieldPaths=sessionToken"
+        .. "?updateMask.fieldPaths=used&updateMask.fieldPaths=sessionToken"
     local ok, res = pcall(function()
         return httpRequest({
             Url     = patchUrl, Method = "PATCH",
@@ -294,6 +347,7 @@ end
 
 -- ─────────────────────────────────────────────
 --  USER SETTINGS  (Firestore ↔ GUI sync)
+-- ─────────────────────────────────────────────
 local USER_FLAGS_TO_SYNC = {
     "AutoRace", "StartSolo", "RaceSpeed", "MinWaitTime", "AutoVaryWait", "SelectRace",
     "AutoRob", "IncludeCargoCrates", "AntiCop", "IncludeBankHeist",
@@ -318,7 +372,7 @@ local function fetchUserSettings(username)
         return nil
     end
     if res.StatusCode ~= 200 then
-        logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode) .. " — check Firestore rules allow public read on userSettings")
+        logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode))
         return nil
     end
     local parsed = HttpService:JSONDecode(res.Body)
@@ -375,7 +429,7 @@ local function saveUserSettings(username, ML)
     fields["lastModified"] = { integerValue = tostring(os.time()) }
     local mask = "updateMask.fieldPaths=lastModified"
     for _, flagName in ipairs(USER_FLAGS_TO_SYNC) do
-        mask = mask .. "&amp;updateMask.fieldPaths=" .. flagName
+        mask = mask .. "&updateMask.fieldPaths=" .. flagName
     end
     logInfo("saveUserSettings → " .. username)
     pcall(function()
@@ -414,6 +468,7 @@ end
 
 -- ─────────────────────────────────────────────
 --  INSTANT SETTINGS POLL
+-- ─────────────────────────────────────────────
 local function startSettingsPoll(ML, username)
     local lastKnownModified = 0
 
@@ -448,9 +503,7 @@ local function startSettingsPoll(ML, username)
                 end
             end
 
-            if remoteModified <= lastKnownModified then
-                continue
-            end
+            if remoteModified <= lastKnownModified then continue end
 
             local n = applyUserSettings(ML, fields)
             lastKnownModified = remoteModified
@@ -463,39 +516,158 @@ local function startSettingsPoll(ML, username)
 end
 
 -- ─────────────────────────────────────────────
---  THEME
+--  ICEWARE-STYLE THEME APPLICATION
+-- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
     pcall(function()
         if not ML.Theme then return end
 
+        -- ── Core colour overrides matching IceWare's monochromatic dark palette ──
         local overrides = {
-            Accent                = Color3.fromRGB(255, 255, 255),
-            Text                  = Color3.fromRGB(255, 255, 255),
-            SubText               = Color3.fromRGB(180, 180, 180),
-            DimText               = Color3.fromRGB(110, 110, 110),
-            Thumb                 = Color3.fromRGB(255, 255, 255),
-            DisabledThumb         = Color3.fromRGB(55,  55,  55),
-            SelectedElementBorder = Color3.fromRGB(255, 255, 255),
-            NotificationBorder    = Color3.fromRGB(255, 255, 255),
+            -- Window & containers
+            Background              = IW.Background,
+            SecondaryBackground     = IW.SecondaryBG,
+            TertiaryBackground      = IW.SectionBG,
+            ElementBackground       = IW.ElementBG,
+            HoveredElementBackground= IW.HoverBG,
+            SectionBackground       = IW.SectionBG,
+            DropdownBackground      = IW.DropdownBG,
+            DropdownItemBackground  = IW.DropdownItem,
+            DropdownSelectedBackground = IW.DropdownSelected,
+
+            -- Borders
+            Border                  = IW.Border,
+            LightBorder             = IW.BorderLight,
+            ElementBorder           = IW.Border,
+            SectionBorder           = IW.Border,
+            SelectedElementBorder   = IW.Text,       -- white highlight on selected
+            NotificationBorder      = IW.Text,       -- white notification border
+
+            -- Text
+            Text                    = IW.Text,
+            SubText                 = IW.SubText,
+            DimText                 = IW.DimText,
+            PlaceholderText         = IW.PlaceholderText,
+            HeaderText              = IW.Text,
+            LabelText               = IW.SubText,
+
+            -- Accent (IceWare uses white as its sole accent)
+            Accent                  = IW.Accent,
+            AccentDark              = IW.ElementBG,
+
+            -- Toggles & sliders
+            ToggleBackground        = IW.ToggleOff,
+            ToggleEnabledBackground = IW.ToggleOn,
+            Thumb                   = IW.Thumb,
+            DisabledThumb           = IW.DisabledThumb,
+            SliderBackground        = IW.SliderTrack,
+            SliderFill              = IW.SliderFill,
+
+            -- Scrollbar
+            ScrollBar               = IW.ScrollBar,
+            ScrollBarHover          = IW.ScrollBarHover,
+
+            -- Notifications
+            NotificationBackground  = IW.NotifBG,
+            NotificationIcon        = IW.Text,
+
+            -- Font — GothamBold for titles, GothamSemibold for body
+            Font                    = IW.FontBody,
+            TitleFont               = IW.FontTitle,
         }
 
-        for key, color in pairs(overrides) do
+        for key, value in pairs(overrides) do
             if ML.Theme[key] ~= nil then
-                ML.Theme[key] = color
-                pcall(function() ML:ChangeTheme(key, color) end)
+                ML.Theme[key] = value
+                pcall(function() ML:ChangeTheme(key, value) end)
+            else
+                -- attempt blind set even if not pre-declared in the theme table
+                pcall(function() ML:ChangeTheme(key, value) end)
             end
         end
 
-        if ML.Theme.Font ~= nil then
-            pcall(function() ML:ChangeTheme("Font", ML.Theme.Font) end)
-        end
+        -- ── Additional raw GuiObject styling pass ──
+        -- Walk the CoreGui/PlayerGui tree and re-style any ExecSync frames directly,
+        -- ensuring the background/border colours are exactly right even if the
+        -- library doesn't expose every key through ChangeTheme.
+        task.defer(function()
+            pcall(function()
+                local roots = { gethui(), PlayerGui }
+                for _, root in ipairs(roots) do
+                    for _, desc in ipairs(root:GetDescendants()) do
+                        -- Re-colour frames that look like window/section backgrounds
+                        if desc:IsA("Frame") or desc:IsA("ScrollingFrame") then
+                            local bg = desc.BackgroundColor3
+                            -- If the element was a mid-grey placeholder, push it to IceWare dark
+                            local r, g, b = bg.R * 255, bg.G * 255, bg.B * 255
+                            if r > 25 and r < 60 and math.abs(r - g) < 8 and math.abs(g - b) < 8 then
+                                desc.BackgroundColor3 = IW.ElementBG
+                            elseif r <= 25 and math.abs(r - g) < 5 and math.abs(g - b) < 5 then
+                                desc.BackgroundColor3 = IW.Background
+                            end
+                            -- Enforce border transparency / thinness
+                            if desc.BorderSizePixel and desc.BorderSizePixel > 0 then
+                                desc.BorderColor3 = IW.Border
+                            end
+                        end
 
-        logInfo("Theme applied — accent/text/thumb only, font preserved")
+                        -- Enforce text colours on labels
+                        if desc:IsA("TextLabel") then
+                            if desc.TextColor3 ~= IW.Text and desc.TextColor3 ~= IW.SubText then
+                                local tr = desc.TextColor3.R * 255
+                                if tr > 150 then
+                                    desc.TextColor3 = IW.Text
+                                elseif tr > 80 then
+                                    desc.TextColor3 = IW.SubText
+                                else
+                                    desc.TextColor3 = IW.DimText
+                                end
+                            end
+                            -- Apply Gotham font family
+                            pcall(function()
+                                if desc.TextSize and desc.TextSize >= 16 then
+                                    desc.Font = IW.FontTitle
+                                else
+                                    desc.Font = IW.FontBody
+                                end
+                            end)
+                        end
+
+                        if desc:IsA("TextButton") or desc:IsA("TextBox") then
+                            pcall(function() desc.Font = IW.FontBody end)
+                            if desc:IsA("TextButton") then
+                                desc.BackgroundColor3 = IW.ElementBG
+                                desc.TextColor3 = IW.Text
+                                desc.BorderColor3 = IW.Border
+                            end
+                        end
+
+                        -- UICorner — IceWare uses very subtle corners (2–4 px)
+                        if desc:IsA("UICorner") then
+                            if desc.CornerRadius.Offset > 6 then
+                                desc.CornerRadius = UDim.new(0, 4)
+                            end
+                        end
+
+                        -- UIStroke — use border colour
+                        if desc:IsA("UIStroke") then
+                            desc.Color = IW.Border
+                            if desc.Thickness > 1.5 then
+                                desc.Thickness = 1
+                            end
+                        end
+                    end
+                end
+            end)
+        end)
+
+        logInfo("IceWare theme applied — GothamBold/SemiBold, monochromatic dark palette")
     end)
 end
 
 -- ─────────────────────────────────────────────
 --  MAIN GUI
+-- ─────────────────────────────────────────────
 local function LoadMainScript(username)
     local LoadingTick = os.clock()
 
@@ -510,7 +682,7 @@ local function LoadMainScript(username)
         Name      = "ExecSync",
         Version   = "v1.4.4",
         Logo      = "135215559087473",
-        FadeSpeed = 0.25,
+        FadeSpeed = 0.20,   -- slightly snappier to feel more like IceWare
     })
 
     local Watermark = ML:Watermark("ExecSync | Driving Empire", "135215559087473")
@@ -531,7 +703,7 @@ local function LoadMainScript(username)
         ["CarMods"]  = Pages["Main"]:SubPage({ Name = "Car Mods",  Icon = "103174889897193", Columns = 2 }),
     }
 
-    -- Auto Farm
+    -- ── Auto Farm ──
     do
         local Racing  = MainSub["AutoFarm"]:Section({ Name = "Racing",  Side = 1 })
         local Robbery = MainSub["AutoFarm"]:Section({ Name = "Robbery", Side = 2 })
@@ -557,7 +729,7 @@ local function LoadMainScript(username)
         Robbery:Slider({ Name = "Pause Bag Threshold",  Flag = "PauseBagThreshold",  Min = 1, Max = 100, Default = 25, Decimals = 1, Callback = function() end })
     end
 
-    -- Car Mods
+    -- ── Car Mods ──
     do
         local Perf  = MainSub["CarMods"]:Section({ Name = "Performance",    Side = 1 })
         local Extra = MainSub["CarMods"]:Section({ Name = "Extra Features", Side = 2 })
@@ -578,7 +750,7 @@ local function LoadMainScript(username)
         Extra:Toggle({ Name = "Infinite Nitro",        Flag = "InfiniteNitro",      Default = false, Callback = function() end })
     end
 
-    -- Miscellaneous
+    -- ── Miscellaneous ──
     do
         local Rewards   = Pages["Misc"]:Section({ Name = "Rewards",      Side = 1 })
         local Trolling  = Pages["Misc"]:Section({ Name = "Trolling",     Side = 1 })
@@ -609,7 +781,7 @@ local function LoadMainScript(username)
 
     Pages["Players"]:Playerlist({ Callback = function(...) end })
 
-    -- Settings
+    -- ── Settings ──
     local SettingsSub = {
         ["Config"]  = Pages["Settings"]:SubPage({ Name = "Configuration", Icon = "137300573942266", Columns = 2 }),
         ["Configs"] = Pages["Settings"]:SubPage({ Name = "Configs",       Icon = "96491224522405",  Columns = 2 }),
@@ -628,6 +800,7 @@ local function LoadMainScript(username)
         Session:Button({ Name = "Rejoin", Callback = function()
             game:GetService("TeleportService"):Teleport(game.PlaceId)
         end })
+
         Session:Button({ Name = "Server Hop", Callback = function()
             local TS = game:GetService("TeleportService")
             local servers = HttpService:JSONDecode(game:HttpGet(
@@ -639,6 +812,7 @@ local function LoadMainScript(username)
                 end
             end
         end })
+
         Session:Button({ Name = "Pull Settings from Cloud", Callback = function()
             notify("ExecSync", "Fetching settings…", 2)
             task.spawn(function()
@@ -651,22 +825,27 @@ local function LoadMainScript(username)
                 end
             end)
         end })
+
         Session:Button({ Name = "Push Settings to Cloud", Callback = function()
             task.spawn(function() saveUserSettings(username, ML) end)
         end })
+
         Session:Button({ Name = "Eject", Callback = function()
             logInfo("Eject"); goOffline(); ML:Unload()
         end })
+
         Session:Button({ Name = "Log Out", Callback = function()
             logInfo("Log Out — clearing session")
             deleteSessionFile(); goOffline()
             notify("ExecSync", "Logged out. Re-run the script to sign in again.", 4)
             task.wait(2); ML:Unload()
         end })
+
         Session:Button({ Name = "Join Discord", Callback = function()
             if setclipboard then setclipboard(DISCORD_INVITE) end
             notify("ExecSync", "Discord link copied!", 3)
         end })
+
         Session:Button({ Name = "Copy Game URL", Callback = function()
             local url = "https://www.roblox.com/games/" .. tostring(game.PlaceId)
             if setclipboard then setclipboard(url) end
@@ -683,7 +862,7 @@ local function LoadMainScript(username)
         UI:Toggle({ Name = "Watermark", Flag = "Watermark", Default = true,
             Callback = function(v) Watermark:SetVisibility(v) end })
 
-        Anim:Slider({ Name = "Time",    Flag = "TweenTime",      Min = 0, Max = 5,  Default = 0.3, Decimals = 0.01, Callback = function() end })
+        Anim:Slider({ Name = "Time",    Flag = "TweenTime",      Min = 0, Max = 5,  Default = 0.2, Decimals = 0.01, Callback = function() end })
         Anim:Dropdown({ Name = "Style", Flag = "TweenStyle",
             Items   = { "Linear","Sine","Quad","Cubic","Quart","Quint","Exponential","Circular","Back","Elastic","Bounce" },
             Default = "Cubic", MaxSize = 150, Callback = function() end })
@@ -691,11 +870,46 @@ local function LoadMainScript(username)
             Items = { "In","Out","InOut" }, Default = "Out", MaxSize = 80, Callback = function() end })
     end
 
-    -- Configs & Themes (abbreviated for cleanliness - full version is in original)
-    -- [Note: The full config/theme sections are included in the original file]
+    -- ── Configs subpage ──
+    do
+        local SaveLoad = SettingsSub["Configs"]:Section({ Name = "Save / Load", Side = 1 })
+        local Auto     = SettingsSub["Configs"]:Section({ Name = "Autoload",    Side = 2 })
+
+        SaveLoad:Textbox({ Name = "Config Name", Flag = "ConfigName", Default = "", Placeholder = "Enter Name", Callback = function() end })
+        SaveLoad:Button({ Name = "Create",       Callback = function() end })
+        SaveLoad:Button({ Name = "Delete",       Callback = function() end })
+        SaveLoad:Button({ Name = "Load",         Callback = function() end })
+        SaveLoad:Button({ Name = "Save",         Callback = function() end })
+        SaveLoad:Button({ Name = "Refresh List", Callback = function() end })
+
+        Auto:Button({ Name = "Set Selected Config As Autoload", Callback = function() end })
+        Auto:Button({ Name = "Set Current Config As Autoload",  Callback = function() end })
+        Auto:Button({ Name = "Remove Autoload Config",          Callback = function() end })
+    end
+
+    -- ── Theme subpage ──
+    do
+        local ThemeSec = SettingsSub["Theme"]:Section({ Name = "Colour Overrides", Side = 1 })
+        local FontSec  = SettingsSub["Theme"]:Section({ Name = "Typography",       Side = 2 })
+
+        ThemeSec:Label("IceWare theme active by default.", "Center")
+        ThemeSec:Button({ Name = "Re-apply IceWare Theme", Callback = function()
+            task.defer(function() applyExecSyncTheme(ML) end)
+            notify("ExecSync", "IceWare theme re-applied ✓", 3)
+        end })
+
+        FontSec:Label("Font: GothamBold (titles)", "Left")
+        FontSec:Label("Font: GothamSemibold (body)", "Left")
+    end
 
     ML:Init()
+
+    -- Apply IceWare theme immediately after init, then again after a short delay
+    -- to catch any elements the library creates asynchronously.
     task.defer(function() applyExecSyncTheme(ML) end)
+    task.delay(0.5, function() applyExecSyncTheme(ML) end)
+    task.delay(1.5, function() applyExecSyncTheme(ML) end)
+
     goOnline()
 
     task.spawn(function()
@@ -712,7 +926,7 @@ local function LoadMainScript(username)
         Description = "Loaded in: " .. string.format("%.4f", os.clock() - LoadingTick) .. "s",
         Duration    = 5,
         Icon        = "116339777575852",
-        IconColor   = Color3.fromRGB(255, 255, 255),
+        IconColor   = IW.Text,
     })
 
     startSettingsPoll(ML, username)
@@ -720,7 +934,8 @@ local function LoadMainScript(username)
 end
 
 -- ─────────────────────────────────────────────
---  KEY SYSTEM
+--  KEY SYSTEM  (same IceWare theme)
+-- ─────────────────────────────────────────────
 local function BuildKeySystem(onSuccess)
     local KW = loadstring(game:HttpGet(
         "https://raw.githubusercontent.com/sametexe001/sametlibs/refs/heads/main/Kiwisense/Library.lua"
@@ -732,7 +947,7 @@ local function BuildKeySystem(onSuccess)
         Name      = "ExecSync",
         Version   = "Key System",
         Logo      = "135215559087473",
-        FadeSpeed = 0.25,
+        FadeSpeed = 0.20,
     })
 
     local KeyPage = Win:Page({ Name = "Key System", Icon = "116339777575852", Columns = 2 })
@@ -809,7 +1024,11 @@ local function BuildKeySystem(onSuccess)
     end })
 
     KW:Init()
+
     task.defer(function() applyExecSyncTheme(KW) end)
+    task.delay(0.5, function() applyExecSyncTheme(KW) end)
+    task.delay(1.5, function() applyExecSyncTheme(KW) end)
+
     logInfo("Key system displayed for " .. LocalPlayer.Name)
 end
 
