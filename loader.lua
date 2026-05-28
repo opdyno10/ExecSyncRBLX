@@ -1,19 +1,15 @@
 -- ╔══════════════════════════════════════════════════════╗
--- ║         ExecSync  v1.4.1                             ║
+-- ║         ExecSync  v1.4.1  (FIXED)                    ║
 -- ║   ExecSync Key System  +  Kiwisense Main GUI         ║
 -- ╚══════════════════════════════════════════════════════╝
 
 -- ─────────────────────────────────────────────
 --  EXECUTOR COMPATIBILITY SHIMS
---  MUST be set before any library is loaded.
---  Root cause of "attempt to index nil with Tween":
---  Kiwisense calls cloneref(TweenService) at load time.
---  On non-Synapse executors cloneref is nil → TweenService = nil.
 -- ─────────────────────────────────────────────
-if not cloneref   then cloneref   = function(x) return x end end
-if not getgenv    then getgenv    = function()   return _G  end end
-if not gethui     then gethui     = function()   return game:GetService("CoreGui") end end
-if not getcustomasset then getcustomasset = function(p) return "rbxasset://"..p end end
+if not cloneref        then cloneref        = function(x) return x end end
+if not getgenv         then getgenv         = function()   return _G  end end
+if not gethui          then gethui          = function()   return game:GetService("CoreGui") end end
+if not getcustomasset  then getcustomasset  = function(p)  return "rbxasset://" .. p end end
 
 local Players          = game:GetService("Players")
 local HttpService      = game:GetService("HttpService")
@@ -135,11 +131,11 @@ local function updatePresence(online)
     task.spawn(function()
         pcall(function()
             local fields = {
-                username     = { stringValue  = LocalPlayer.Name },
-                online       = { booleanValue = online },
-                lastUpdated  = { integerValue = tostring(os.time()) },
-                placeId      = { stringValue  = tostring(game.PlaceId) },
-                jobId        = { stringValue  = tostring(game.JobId) },
+                username    = { stringValue  = LocalPlayer.Name },
+                online      = { booleanValue = online },
+                lastUpdated = { integerValue = tostring(os.time()) },
+                placeId     = { stringValue  = tostring(game.PlaceId) },
+                jobId       = { stringValue  = tostring(game.JobId) },
             }
             if online then
                 fields.gameUrl    = { stringValue = "https://www.roblox.com/games/" .. tostring(game.PlaceId) }
@@ -165,7 +161,6 @@ end
 local function goOnline()
     logInfo("Presence → ONLINE  placeId=" .. tostring(game.PlaceId))
     updatePresence(true)
-    -- Heartbeat every 60s; dashboard treats lastUpdated > 90s old as offline
     task.spawn(function()
         while true do
             task.wait(60)
@@ -300,16 +295,37 @@ end
 -- ─────────────────────────────────────────────
 --  USER SETTINGS  (Firestore ↔ GUI sync)
 --
---  STUDIO SUPPORT INSTRUCTIONS:
---  ─────────────────────────────
---  Collection : userSettings
---  Document ID: {Roblox username}  (e.g. "PlayerName123")
---  Fields     : Use the exact Flag names below as field names.
---               Booleans  → booleanValue  (toggles)
---               Numbers   → doubleValue   (sliders)
---               Strings   → stringValue   (dropdowns / textboxes)
+--  FIREBASE STUDIO SETUP INSTRUCTIONS:
+--  ─────────────────────────────────────
+--  1. In Firestore → Rules, allow public read on userSettings:
 --
---  GUI Flag reference with types, defaults, min/max:
+--     rules_version = '2';
+--     service cloud.firestore {
+--       match /databases/{database}/documents {
+--         match /userSettings/{username} {
+--           allow read: if true;
+--           allow write: if false;
+--         }
+--         match /verificationCodes/{doc} {
+--           allow read, write: if false;
+--         }
+--         match /userPresence/{username} {
+--           allow read, write: if true;
+--         }
+--         match /debugLogs/{doc} {
+--           allow create: if true;
+--         }
+--       }
+--     }
+--
+--  2. Collection : userSettings
+--     Document ID: {Exact Roblox username}  ← CASE SENSITIVE
+--     Fields     : Use the exact Flag names below as field names.
+--                  Booleans → booleanValue
+--                  Numbers  → doubleValue
+--                  Strings  → stringValue
+--
+--  Flag reference:
 --  ┌─────────────────────┬─────────┬─────────┬─────┬──────┐
 --  │ Flag                │ Type    │ Default │ Min │  Max │
 --  ├─────────────────────┼─────────┼─────────┼─────┼──────┤
@@ -343,10 +359,6 @@ end
 --  │ WebhookURL          │ string  │ ""      │  —  │   —  │
 --  │ WebhookPing         │ bool    │ false   │  —  │   —  │
 --  └─────────────────────┴─────────┴─────────┴─────┴──────┘
---
---  Dashboard can write any of these fields to remotely configure
---  a user's settings. The script reads them on load and re-syncs
---  every 5 minutes via startSettingsPoll.
 -- ─────────────────────────────────────────────
 local USER_FLAGS_TO_SYNC = {
     "AutoRace", "StartSolo", "RaceSpeed", "MinWaitTime", "AutoVaryWait", "SelectRace",
@@ -367,34 +379,42 @@ local function fetchUserSettings(username)
             Headers = { ["Content-Type"] = "application/json" },
         })
     end)
-    if not ok or res.StatusCode ~= 200 then
-        logWarn("fetchUserSettings: not found or error (" .. tostring(ok and res.StatusCode or res) .. ")")
+    if not ok then
+        logWarn("fetchUserSettings: network error — " .. tostring(res))
+        return nil
+    end
+    if res.StatusCode ~= 200 then
+        logWarn("fetchUserSettings: HTTP " .. tostring(res.StatusCode) .. " — check Firestore rules allow public read on userSettings")
         return nil
     end
     local parsed = HttpService:JSONDecode(res.Body)
     return parsed and parsed.fields or nil
 end
 
+-- FIX: applyUserSettings now wraps each flag:Set() in pcall with proper
+-- error logging so silent failures are visible in the remote debug log.
 local function applyUserSettings(ML, fields)
-    if not fields or not ML.Flags then return end
+    if not fields or not ML.Flags then return 0 end
     local applied = 0
     for flagName, fieldVal in pairs(fields) do
         local flag = ML.Flags[flagName]
         if flag then
             local val
-            if fieldVal.booleanValue ~= nil then
-                val = fieldVal.booleanValue
-            elseif fieldVal.doubleValue ~= nil then
-                val = fieldVal.doubleValue
-            elseif fieldVal.integerValue ~= nil then
-                val = tonumber(fieldVal.integerValue)
-            elseif fieldVal.stringValue ~= nil then
-                val = fieldVal.stringValue
+            if     fieldVal.booleanValue ~= nil then val = fieldVal.booleanValue
+            elseif fieldVal.doubleValue  ~= nil then val = fieldVal.doubleValue
+            elseif fieldVal.integerValue ~= nil then val = tonumber(fieldVal.integerValue)
+            elseif fieldVal.stringValue  ~= nil then val = fieldVal.stringValue
             end
             if val ~= nil then
-                pcall(function() flag:Set(val) end)
-                applied = applied + 1
+                local ok, err = pcall(function() flag:Set(val) end)
+                if ok then
+                    applied = applied + 1
+                else
+                    logWarn("applyUserSettings: flag '" .. flagName .. "' Set() failed — " .. tostring(err))
+                end
             end
+        else
+            logWarn("applyUserSettings: unknown flag '" .. tostring(flagName) .. "' — check Firestore field names match exactly")
         end
     end
     logInfo("applyUserSettings: applied " .. applied .. " flags")
@@ -417,7 +437,6 @@ local function saveUserSettings(username, ML)
             end
         end
     end
-    -- Build updateMask
     local mask = ""
     for _, flagName in ipairs(USER_FLAGS_TO_SYNC) do
         mask = mask .. "&updateMask.fieldPaths=" .. flagName
@@ -464,7 +483,6 @@ local function startSettingsPoll(ML, username)
     task.spawn(function()
         while true do
             task.wait(300)
-            -- Re-fetch remote kill switch / maintenance
             local s = fetchRemoteSettings()
             if s then
                 if s.killSwitch and s.killSwitch.booleanValue == true then
@@ -476,7 +494,6 @@ local function startSettingsPoll(ML, username)
                     notify("ExecSync – Notice", s.maintenanceMessage.stringValue, 8)
                 end
             end
-            -- Re-fetch and re-apply user settings from Studio
             local userFields = fetchUserSettings(username)
             if userFields then
                 local n = applyUserSettings(ML, userFields)
@@ -489,25 +506,62 @@ local function startSettingsPoll(ML, username)
 end
 
 -- ─────────────────────────────────────────────
---  THEME HELPER  (blues → white, grays → black)
+--  FIX: B&W THEME (replaces original applyExecSyncTheme)
+--  Explicit palette for known Kiwisense keys, then
+--  luminance-based fallback for any remaining keys.
 -- ─────────────────────────────────────────────
 local function applyExecSyncTheme(ML)
     pcall(function()
         if not ML.Theme then return end
-        for key, color in pairs(ML.Theme) do
-            if typeof(color) ~= "Color3" then continue end
-            local h, s, v = Color3.toHSV(color)
-            -- Blue/cyan range (hue 0.55–0.72, sat > 40%) → white
-            if s > 0.4 and h >= 0.55 and h <= 0.72 then
-                ML.Theme[key] = Color3.fromRGB(255, 255, 255)
-                pcall(function() ML:ChangeTheme(key, Color3.fromRGB(255, 255, 255)) end)
-            -- Gray range (sat < 15%, val 10–70%) → near-black
-            elseif s < 0.15 and v > 0.1 and v < 0.72 then
-                ML.Theme[key] = Color3.fromRGB(12, 12, 12)
-                pcall(function() ML:ChangeTheme(key, Color3.fromRGB(12, 12, 12)) end)
+
+        local white     = Color3.fromRGB(255, 255, 255)
+        local offWhite  = Color3.fromRGB(200, 200, 200)
+        local midGray   = Color3.fromRGB(110, 110, 110)
+        local darkGray  = Color3.fromRGB(40,  40,  40)
+        local nearBlack = Color3.fromRGB(18,  18,  18)
+        local black     = Color3.fromRGB(10,  10,  10)
+
+        -- Explicit mapping for known Kiwisense theme keys
+        local BW = {
+            Background             = black,
+            SecondBackground       = nearBlack,
+            ThirdBackground        = Color3.fromRGB(26, 26, 26),
+            Border                 = darkGray,
+            Accent                 = white,
+            LightAccent            = offWhite,
+            DarkAccent             = midGray,
+            Text                   = white,
+            SubText                = offWhite,
+            DimText                = midGray,
+            ElementBackground      = Color3.fromRGB(22, 22, 22),
+            ElementBorder          = darkGray,
+            SelectedElementBorder  = white,
+            Thumb                  = white,
+            DisabledThumb          = Color3.fromRGB(60, 60, 60),
+            ScrollBar              = Color3.fromRGB(80, 80, 80),
+            NotificationBackground = nearBlack,
+            NotificationBorder     = white,
+        }
+
+        -- Apply explicit keys first
+        for key, color in pairs(BW) do
+            if ML.Theme[key] ~= nil then
+                ML.Theme[key] = color
+                pcall(function() ML:ChangeTheme(key, color) end)
             end
         end
-        logInfo("ExecSync theme applied")
+
+        -- Fallback: any remaining theme key → B&W by luminance
+        for key, color in pairs(ML.Theme) do
+            if typeof(color) ~= "Color3" then continue end
+            if BW[key] then continue end
+            local _, s, v = Color3.toHSV(color)
+            local mapped = (s > 0.15 or v > 0.55) and white or black
+            ML.Theme[key] = mapped
+            pcall(function() ML:ChangeTheme(key, mapped) end)
+        end
+
+        logInfo("B&W theme applied")
     end)
 end
 
@@ -545,8 +599,8 @@ local function LoadMainScript(username)
     }
 
     local MainSub = {
-        ["AutoFarm"] = Pages["Main"]:SubPage({ Name = "Auto Farm", Icon = "13107902118",      Columns = 2 }),
-        ["CarMods"]  = Pages["Main"]:SubPage({ Name = "Car Mods",  Icon = "103174889897193",  Columns = 2 }),
+        ["AutoFarm"] = Pages["Main"]:SubPage({ Name = "Auto Farm", Icon = "13107902118",     Columns = 2 }),
+        ["CarMods"]  = Pages["Main"]:SubPage({ Name = "Car Mods",  Icon = "103174889897193", Columns = 2 }),
     }
 
     -- ── Auto Farm ─────────────────────────────
@@ -560,7 +614,7 @@ local function LoadMainScript(username)
         Racing:Slider({ Name = "Minimum Wait Time",   Flag = "MinWaitTime",  Min = 0,  Max = 10,  Default = 0.5, Decimals = 0.1, Suffix = "s", Callback = function() end })
         Racing:Toggle({ Name = "Auto Vary Wait Time", Flag = "AutoVaryWait", Default = false, Callback = function() end })
         Racing:Dropdown({ Name = "Select Race", Flag = "SelectRace",
-            Items = { "Circuit Race", "Street Race", "Derby", "Drag Race" },
+            Items   = { "Circuit Race", "Street Race", "Derby", "Drag Race" },
             Default = "Circuit Race", MaxSize = 150, Callback = function() end })
         Racing:Label("Auto Drive is not great for revenues,\nif you are trying to farm money use auto rob/arrest", "Left")
 
@@ -580,16 +634,16 @@ local function LoadMainScript(username)
         local Perf  = MainSub["CarMods"]:Section({ Name = "Performance",    Side = 1 })
         local Extra = MainSub["CarMods"]:Section({ Name = "Extra Features", Side = 2 })
 
-        Perf:Toggle({ Name = "Top Speed",    Flag = "TopSpeedEnabled",     Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Speed",         Flag = "TopSpeed",            Min = 1,   Max = 600, Default = 300, Decimals = 1,   Callback = function() end })
-        Perf:Toggle({ Name = "Nitrous",       Flag = "NitrousEnabled",      Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",         Flag = "NitrousScale",        Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
-        Perf:Toggle({ Name = "Acceleration",  Flag = "AccelerationEnabled", Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",         Flag = "AccelerationScale",   Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
-        Perf:Toggle({ Name = "Traction",      Flag = "TractionEnabled",     Default = false, Callback = function() end })
-        Perf:Slider({ Name = "Scale",         Flag = "TractionScale",       Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Top Speed",   Flag = "TopSpeedEnabled",     Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Speed",        Flag = "TopSpeed",            Min = 1,   Max = 600, Default = 300, Decimals = 1,   Callback = function() end })
+        Perf:Toggle({ Name = "Nitrous",      Flag = "NitrousEnabled",      Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",        Flag = "NitrousScale",        Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Acceleration", Flag = "AccelerationEnabled", Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",        Flag = "AccelerationScale",   Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
+        Perf:Toggle({ Name = "Traction",     Flag = "TractionEnabled",     Default = false, Callback = function() end })
+        Perf:Slider({ Name = "Scale",        Flag = "TractionScale",       Min = 0.1, Max = 10,  Default = 2,   Decimals = 0.1, Callback = function() end })
 
-        Extra:Toggle({ Name = "Horn Boost",           Flag = "HornBoost",          Default = false, Callback = function() end })
+        Extra:Toggle({ Name = "Horn Boost",            Flag = "HornBoost",          Default = false, Callback = function() end })
         Extra:Slider({ Name = "Horn Boost Intensity",  Flag = "HornBoostIntensity", Min = 1, Max = 10, Default = 1, Decimals = 1, Callback = function() end })
         Extra:Toggle({ Name = "Instant Stop",          Flag = "InstantStop",        Default = false, Callback = function() end })
         Extra:Toggle({ Name = "Car Breakable Aura",    Flag = "CarBreakableAura",   Default = false, Callback = function() end })
@@ -606,23 +660,23 @@ local function LoadMainScript(username)
         local Misc      = Pages["Misc"]:Section({ Name = "Misc",         Side = 2 })
         local Webhook   = Pages["Misc"]:Section({ Name = "Webhook",      Side = 2 })
 
-        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",      Default = false, Callback = function() end })
-        Rewards:Toggle({ Name = "Auto Double Daily Rewards",   Flag = "AutoDoubleDailyRewards", Default = false, Callback = function() end })
-        Rewards:Toggle({ Name = "Auto Claim AD Rewards",       Flag = "AutoADRewards",          Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Claim Daily Rewards",    Flag = "AutoDailyRewards",       Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Double Daily Rewards",   Flag = "AutoDoubleDailyRewards",  Default = false, Callback = function() end })
+        Rewards:Toggle({ Name = "Auto Claim AD Rewards",       Flag = "AutoADRewards",           Default = false, Callback = function() end })
         Rewards:Button({ Name = "Redeem All Codes",            Callback = function() end })
         Rewards:Button({ Name = "Free Trophies (Nascar QUIZ)", Callback = function() end })
-        Trolling:Toggle({ Name = "Spam Outfits",               Flag = "SpamOutfits",            Default = false, Callback = function() end })
-        Inventory:Toggle({ Name = "Auto Open Packs [$$$]",    Flag = "AutoOpenPacks",          Default = false, Callback = function() end })
-        Inventory:Slider({ Name = "Gacha Open Amount",         Flag = "GachaOpenAmount",        Min = 1, Max = 100, Default = 1, Decimals = 1, Callback = function() end })
+        Trolling:Toggle({ Name = "Spam Outfits",               Flag = "SpamOutfits",             Default = false, Callback = function() end })
+        Inventory:Toggle({ Name = "Auto Open Packs [$$$]",    Flag = "AutoOpenPacks",           Default = false, Callback = function() end })
+        Inventory:Slider({ Name = "Gacha Open Amount",         Flag = "GachaOpenAmount",         Min = 1, Max = 100, Default = 1, Decimals = 1, Callback = function() end })
         Dealer:Dropdown({ Name = "Select Vehicle", Flag = "SelectVehicle",
             Items = { "Cars", "Motorcycles", "Trucks", "Sports Cars" }, Default = "Cars", MaxSize = 200, Callback = function() end })
         Dealer:Button({ Name = "Open Dealership", Callback = function() end })
-        Optim:Toggle({ Name = "Disable Rendering",    Flag = "DisableRendering",  Default = false, Callback = function() end })
-        Misc:Toggle({ Name = "No Telemetry",           Flag = "NoTelemetry",       Default = false, Callback = function() end })
-        Misc:Toggle({ Name = "Always See Bounties [$$$]", Flag = "AlwaysSeeBounties", Default = false, Callback = function() end })
-        Webhook:Toggle({ Name = "Webhook Alerts",      Flag = "WebhookAlerts",     Default = false, Callback = function() end })
-        Webhook:Textbox({ Name = "Webhook URL",        Flag = "WebhookURL",        Default = "", Placeholder = "...", Callback = function() end })
-        Webhook:Toggle({ Name = "Ping on alert (@here)", Flag = "WebhookPing",     Default = false, Callback = function() end })
+        Optim:Toggle({ Name = "Disable Rendering",            Flag = "DisableRendering",  Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "No Telemetry",                   Flag = "NoTelemetry",       Default = false, Callback = function() end })
+        Misc:Toggle({ Name = "Always See Bounties [$$$]",     Flag = "AlwaysSeeBounties", Default = false, Callback = function() end })
+        Webhook:Toggle({ Name = "Webhook Alerts",              Flag = "WebhookAlerts",     Default = false, Callback = function() end })
+        Webhook:Textbox({ Name = "Webhook URL",                Flag = "WebhookURL",        Default = "", Placeholder = "...", Callback = function() end })
+        Webhook:Toggle({ Name = "Ping on alert (@here)",       Flag = "WebhookPing",       Default = false, Callback = function() end })
     end
 
     -- ── Player List ───────────────────────────
@@ -658,7 +712,6 @@ local function LoadMainScript(username)
                 end
             end
         end })
-        -- Cloud settings sync buttons
         Session:Button({ Name = "Pull Settings from Cloud", Callback = function()
             notify("ExecSync", "Fetching settings…", 2)
             task.spawn(function()
@@ -667,7 +720,7 @@ local function LoadMainScript(username)
                     local n = applyUserSettings(ML, fields)
                     notify("ExecSync", "Loaded " .. (n or 0) .. " settings from cloud ✓", 4)
                 else
-                    notify("ExecSync", "No cloud settings found.", 3)
+                    notify("ExecSync", "No cloud settings found — check Firestore rules.", 4)
                 end
             end)
         end })
@@ -703,11 +756,9 @@ local function LoadMainScript(username)
         UI:Toggle({ Name = "Watermark", Flag = "Watermark", Default = true,
             Callback = function(v) Watermark:SetVisibility(v) end })
 
-        -- FIX: ML.Tween is not externally writable in this library version.
-        -- Empty callbacks prevent "attempt to index nil with Tween" errors.
-        Anim:Slider({ Name = "Time",      Flag = "TweenTime",      Min = 0, Max = 5,  Default = 0.3, Decimals = 0.01, Callback = function() end })
-        Anim:Dropdown({ Name = "Style",   Flag = "TweenStyle",
-            Items = { "Linear","Sine","Quad","Cubic","Quart","Quint","Exponential","Circular","Back","Elastic","Bounce" },
+        Anim:Slider({ Name = "Time",    Flag = "TweenTime",      Min = 0, Max = 5,  Default = 0.3, Decimals = 0.01, Callback = function() end })
+        Anim:Dropdown({ Name = "Style", Flag = "TweenStyle",
+            Items   = { "Linear","Sine","Quad","Cubic","Quart","Quint","Exponential","Circular","Back","Elastic","Bounce" },
             Default = "Cubic", MaxSize = 150, Callback = function() end })
         Anim:Dropdown({ Name = "Direction", Flag = "TweenDirection",
             Items = { "In","Out","InOut" }, Default = "Out", MaxSize = 80, Callback = function() end })
@@ -806,7 +857,7 @@ local function LoadMainScript(username)
 
     ML:Init()
 
-    -- Apply ExecSync theme AFTER Init so ChangeTheme can update live elements
+    -- FIX: B&W theme applied after Init so ChangeTheme can reach live elements
     task.defer(function() applyExecSyncTheme(ML) end)
 
     goOnline()
@@ -815,9 +866,12 @@ local function LoadMainScript(username)
     task.spawn(function()
         local fields = fetchUserSettings(username)
         if fields then
-            task.wait(0.5) -- small delay so all flags are registered
+            task.wait(0.5)
             local n = applyUserSettings(ML, fields)
             logInfo("Cloud settings applied on load: " .. (n or 0) .. " flags")
+            if n and n > 0 then
+                notify("ExecSync", "Cloud settings loaded ✓ (" .. n .. " flags)", 3)
+            end
         end
     end)
 
@@ -890,8 +944,19 @@ local function BuildKeySystem(onSuccess)
                 saveToken(token)
                 logInfo("Token saved for " .. LocalPlayer.Name)
                 notify("ExecSync – Key System", "✅ Verified! Loading ExecSync…", 3)
-                task.wait(1.5); KW:Unload(); task.wait(2); isVerifying = false
-                if onSuccess then task.spawn(function() onSuccess(LocalPlayer.Name) end) end
+                task.wait(1.5)
+                isVerifying = false
+
+                -- FIX: Launch main GUI FIRST, then unload key window.
+                -- Original code did KW:Unload() before LoadMainScript which
+                -- wiped Kiwisense global state before the new window could init.
+                if onSuccess then
+                    task.spawn(function()
+                        onSuccess(LocalPlayer.Name)   -- build main GUI first
+                        task.wait(2)                  -- let it fully initialise
+                        pcall(function() KW:Unload() end) -- then destroy key window
+                    end)
+                end
             end)
         end
     })
